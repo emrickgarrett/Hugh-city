@@ -14,7 +14,7 @@ export interface CitizenData {
   residenceY?: number;
   residenceBuildingId?: string;
   rentPaid: boolean;
-  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home";
+  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home";
   destinationBuildingName?: string;
 }
 
