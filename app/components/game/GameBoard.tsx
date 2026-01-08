@@ -686,7 +686,7 @@ export default function GameBoard() {
         interactionsThisMonth: 0,
       };
 
-      // Get residents from Phaser if available
+      // Get residents from Phaser and fetch their names
       if (phaserGameRef.current) {
         const residentCount = phaserGameRef.current.getBuildingResidentCount(originX, originY);
         // If we have more residents in Phaser than in stats, sync them
@@ -695,6 +695,18 @@ export default function GameBoard() {
           // We don't have the character IDs here, but at least show the count is correct
           // The residents array will be populated through move_in callbacks
         }
+        
+        // Fetch names for all residents to ensure they're in the characterNames map
+        stats.residents.forEach((residentId) => {
+          const citizen = phaserGameRef.current?.getCitizenData(residentId);
+          if (citizen && citizen.name) {
+            setCharacterNames((prev) => {
+              const newMap = new Map(prev);
+              newMap.set(residentId, citizen.name!);
+              return newMap;
+            });
+          }
+        });
       }
 
       setSelectedBuildingStats(stats);
@@ -2346,6 +2358,7 @@ export default function GameBoard() {
         onClose={() => setIsBuildingInfoVisible(false)}
         buildingStats={selectedBuildingStats}
         characterNames={characterNames}
+        onCitizenClick={handleCitizenClick}
       />
 
       {/* Citizen Info Window */}

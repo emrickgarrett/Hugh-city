@@ -17,6 +17,7 @@ interface BuildingInfoWindowProps {
   onClose: () => void;
   buildingStats: BuildingStats | null;
   characterNames: Map<string, string>; // Map of character ID to name
+  onCitizenClick?: (citizenId: string) => void; // Callback when a resident name is clicked
 }
 
 // Helper to format currency
@@ -31,6 +32,7 @@ export default function BuildingInfoWindow({
   onClose,
   buildingStats,
   characterNames,
+  onCitizenClick,
 }: BuildingInfoWindowProps) {
   if (!isVisible || !buildingStats) return null;
 
@@ -132,18 +134,38 @@ export default function BuildingInfoWindow({
             </div>
             {buildingStats.residents.length > 0 ? (
               <div style={{ maxHeight: 100, overflowY: "auto" }}>
-                {buildingStats.residents.map((residentId, index) => (
-                  <div
-                    key={residentId}
-                    style={{
-                      padding: "2px 4px",
-                      backgroundColor: index % 2 === 0 ? "#f0f0f0" : "#ffffff",
-                      fontSize: 11,
-                    }}
-                  >
-                    👤 {characterNames.get(residentId) || `Citizen ${residentId.slice(0, 6)}`}
-                  </div>
-                ))}
+                {buildingStats.residents.map((residentId, index) => {
+                  const residentName = characterNames.get(residentId) || `Citizen ${residentId.slice(0, 6)}`;
+                  const isClickable = onCitizenClick !== undefined;
+                  
+                  return (
+                    <div
+                      key={residentId}
+                      onClick={isClickable ? () => onCitizenClick(residentId) : undefined}
+                      style={{
+                        padding: "2px 4px",
+                        backgroundColor: index % 2 === 0 ? "#f0f0f0" : "#ffffff",
+                        fontSize: 11,
+                        cursor: isClickable ? "pointer" : "default",
+                        color: isClickable ? "#0000ff" : "inherit",
+                        textDecoration: isClickable ? "underline" : "none",
+                        transition: "background-color 0.1s",
+                      }}
+                      onMouseEnter={(e) => {
+                        if (isClickable) {
+                          e.currentTarget.style.backgroundColor = "#e0e0ff";
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (isClickable) {
+                          e.currentTarget.style.backgroundColor = index % 2 === 0 ? "#f0f0f0" : "#ffffff";
+                        }
+                      }}
+                    >
+                      👤 {residentName}
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <div style={{ color: "#888", fontStyle: "italic", fontSize: 11 }}>
