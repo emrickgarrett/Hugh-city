@@ -9,8 +9,92 @@ import {
   getCategories,
   getBuilding,
   BuildingDefinition,
+  getBuildingEconomics,
 } from "@/app/data/buildings";
 import { playDoubleClickSound, playClickSound } from "@/app/utils/sounds";
+
+// Format currency
+function formatCurrency(value: number): string {
+  const sign = value < 0 ? "-" : "";
+  const absValue = Math.abs(value);
+  return `${sign}$${absValue.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+}
+
+// Get building description based on category and type
+function getBuildingDescription(building: BuildingDefinition): string {
+  // Check for specific building descriptions first
+  const specificDescriptions: Record<string, string> = {
+    // Residential
+    "80s-apartment": "Affordable apartment complex. Houses multiple families and generates rent.",
+    "row-houses": "Connected townhouses perfect for growing families.",
+    "medium-apartments": "Mid-size apartment building with good rental income potential.",
+    "large-apartments-20s": "Historic apartment complex with high capacity.",
+    "large-apartments-60s": "Modern high-rise apartments with many units.",
+    "the-dakota": "Luxury apartment building. Premium rent income.",
+    "yellow-apartments": "Bright and cheerful apartment building.",
+    "english-townhouse": "Classic British-style townhouse.",
+    brownstone: "Elegant brownstone building with multiple units.",
+    "leafy-apartments": "Apartment building surrounded by greenery.",
+    "gothic-apartments": "Ornate gothic-style apartment complex.",
+    "modern-terra-condos": "Modern condominium complex with terraces.",
+    
+    // Commercial
+    checkers: "Fast-food restaurant serving burgers and fries to hungry citizens.",
+    popeyes: "Fried chicken restaurant chain. Popular with locals.",
+    dunkin: "Coffee and donut shop. Busy during morning rush.",
+    bookstore: "Shop where citizens buy books and reading materials.",
+    "martini-bar": "Upscale nightlife establishment serving cocktails.",
+    "magicpath-office": "Tech company office building. Generates income from workers.",
+    "promptlayer-office": "Small tech startup office.",
+    "general-intelligence-office": "Corporate office building for tech workers.",
+    "ease-health": "Healthcare technology company headquarters.",
+    "palo-alto-office-center": "Large office complex for multiple businesses.",
+    "palo-alto-wide-office": "Sprawling office building complex.",
+    
+    // Civic
+    "private-school": "Educational institution that charges tuition from students.",
+    
+    // Landmarks
+    church: "Place of worship that generates income from visitors and donations.",
+    "schwab-mansion": "Historic mansion. Tourist attraction that generates income.",
+    "carnegie-mansion": "Famous historic mansion. High visitor income.",
+    "mushroom-kingdom-castle": "Whimsical castle landmark. Popular tourist destination.",
+    "internet-archive": "Digital library and archive. Generates income from visitors.",
+    "hp-house": "Historic landmark house. Tourist attraction.",
+    
+    // Christmas
+    "christmas-town-hall": "Festive town hall decorated for the holidays.",
+    "christmas-bakery": "Holiday bakery serving seasonal treats.",
+    "christmas-gift-shop": "Shop selling holiday gifts and decorations.",
+    "christmas-cocoa-shop": "Cozy shop serving hot cocoa.",
+    "christmas-cafe": "Small holiday-themed cafe.",
+    "santas-workshop": "Santa's workshop. Magical holiday attraction.",
+    "ice-skating-rink": "Outdoor ice skating rink for winter fun.",
+    "christmas-toy-store": "Toy store specializing in holiday gifts.",
+  };
+
+  if (specificDescriptions[building.id]) {
+    return specificDescriptions[building.id];
+  }
+
+  // Generic descriptions by category
+  switch (building.category) {
+    case "residential":
+      return "Housing for citizens. Generates rent income from residents who live here.";
+    case "commercial":
+      return "A business that generates income from customer visits and transactions.";
+    case "civic":
+      return "A public service building that charges fees for services provided.";
+    case "landmark":
+      return "A notable building that attracts visitors and generates tourism income.";
+    case "props":
+      return "Decorative element. No economic function, but adds character to your city.";
+    case "christmas":
+      return "Seasonal decoration or building. May generate income if it's a functional business.";
+    default:
+      return "A building in your city.";
+  }
+}
 
 interface ToolWindowProps {
   selectedTool: ToolType;
@@ -87,7 +171,7 @@ export default function ToolWindow({
   const [activeTab, setActiveTab] = useState<"tools" | BuildingCategory>(
     "tools"
   );
-  const [hoveredBuilding, setHoveredBuilding] = useState<string | null>(null);
+  const [hoveredBuilding, setHoveredBuilding] = useState<string | null>(null); // Building ID
   const [windowSize, setWindowSize] = useState({
     width: typeof window !== "undefined" ? window.innerWidth : 1000,
     height: typeof window !== "undefined" ? window.innerHeight : 800,
@@ -164,7 +248,7 @@ export default function ToolWindow({
         left: Math.min(position.x, windowSize.width - responsiveWidth - 10),
         top: position.y,
         width: responsiveWidth,
-        maxHeight: Math.min(400, windowSize.height - 100),
+        maxHeight: Math.min(600, windowSize.height - 100), // Increased from 400 to 600
         display: "flex",
         flexDirection: "column",
         zIndex: 1000,
@@ -287,7 +371,7 @@ export default function ToolWindow({
         className="rct-panel"
         style={{
           padding: 8,
-          flex: 1,
+          flex: "0 1 auto", // Don't grow, allow shrinking, auto basis
           overflowY: "auto",
           overflowX: "hidden",
           minHeight: 0,
@@ -506,7 +590,7 @@ export default function ToolWindow({
                     onBuildingSelect(building.id);
                     playClickSound();
                   }}
-                  onMouseEnter={() => setHoveredBuilding(building.name)}
+                  onMouseEnter={() => setHoveredBuilding(building.id)}
                   onMouseLeave={() => setHoveredBuilding(null)}
                   className={`rct-button ${isSelected ? "active" : ""}`}
                   style={{
@@ -555,62 +639,171 @@ export default function ToolWindow({
         )}
       </div>
 
-      {/* Footer - shows selected/hovered building name and rotate hint */}
-      {activeTab !== "tools" && (
-        <div
-          style={{
-            padding: "6px 10px",
-            background: "var(--rct-panel-mid)",
-            borderTop: "2px solid var(--rct-panel-dark)",
-            fontSize: 16,
-            minHeight: 24,
-            color: "var(--rct-text-light)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            textShadow: "1px 1px 0 var(--rct-text-shadow)",
-          }}
-        >
-          <span>
-            {hoveredBuilding ||
-              (selectedBuildingId && selectedTool === ToolType.Building
-                ? getBuilding(selectedBuildingId)?.name
-                : "") ||
-              ""}
-          </span>
-          {selectedTool === ToolType.Building && selectedBuildingId && (
-            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ opacity: 0.7, fontSize: 14 }}>
-                press &quot;R&quot; to rotate
-              </span>
-              <button
-                className="rct-button"
-                onClick={() => {
-                  onRotate?.();
-                  playClickSound();
-                }}
-                style={{
-                  padding: 0,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-                title="Rotate building"
-              >
-                <img
-                  src="/UI/r20x20rotate.png"
-                  alt="Rotate"
+      {/* Footer - shows selected/hovered building info */}
+      {activeTab !== "tools" && (() => {
+        const buildingId = hoveredBuilding || 
+          (selectedBuildingId && selectedTool === ToolType.Building ? selectedBuildingId : null);
+
+        const building = buildingId ? getBuilding(buildingId) : null;
+        const economics = building ? getBuildingEconomics(building) : null;
+
+        return (
+          <div
+            style={{
+              padding: "8px 10px",
+              background: "var(--rct-panel-mid)",
+              borderTop: "2px solid var(--rct-panel-dark)",
+              color: "var(--rct-text-light)",
+              textShadow: "1px 1px 0 var(--rct-text-shadow)",
+              fontSize: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              flex: "0 0 auto", // Don't grow or shrink, use content size
+              overflowY: "auto",
+              maxHeight: 350, // Max height with scroll if needed
+            }}
+          >
+            {building ? (
+              <>
+                {/* Building name and rotate hint */}
+                <div
                   style={{
-                    width: 32,
-                    height: 32,
-                    imageRendering: "pixelated",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    fontSize: 16,
                   }}
-                />
-              </button>
-            </span>
-          )}
-        </div>
-      )}
+                >
+                  <span>{building.name}</span>
+                  {selectedTool === ToolType.Building && selectedBuildingId === building.id && (
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ opacity: 0.7, fontSize: 14 }}>
+                        press &quot;R&quot; to rotate
+                      </span>
+                      <button
+                        className="rct-button"
+                        onClick={() => {
+                          onRotate?.();
+                          playClickSound();
+                        }}
+                        style={{
+                          padding: 0,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                        title="Rotate building"
+                      >
+                        <img
+                          src="/UI/r20x20rotate.png"
+                          alt="Rotate"
+                          style={{
+                            width: 32,
+                            height: 32,
+                            imageRendering: "pixelated",
+                          }}
+                        />
+                      </button>
+                    </span>
+                  )}
+                </div>
+
+                {/* Description */}
+                <div style={{ opacity: 0.9, fontSize: 13, lineHeight: 1.4 }}>
+                  {getBuildingDescription(building)}
+                </div>
+
+                {/* Economics info */}
+                {economics && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 6,
+                      marginTop: 4,
+                      paddingTop: 6,
+                      borderTop: "1px solid var(--rct-panel-dark)",
+                    }}
+                  >
+                    <div>
+                      <div style={{ opacity: 0.8, fontSize: 11, marginBottom: 2 }}>
+                        Build Cost:
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: "bold", color: "#ffaa00" }}>
+                        {formatCurrency(economics.buildCost)}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ opacity: 0.8, fontSize: 11, marginBottom: 2 }}>
+                        Monthly Upkeep:
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: "bold", color: "#ff6666" }}>
+                        {formatCurrency(economics.monthlyOperatingCost)}
+                      </div>
+                    </div>
+                    {/* For residential buildings, always show rent and max residents */}
+                    {building.category === "residential" && (
+                      <>
+                        {economics.rentPerResident ? (
+                          <div>
+                            <div style={{ opacity: 0.8, fontSize: 11, marginBottom: 2 }}>
+                              Rent per Resident:
+                            </div>
+                            <div style={{ fontSize: 13, fontWeight: "bold", color: "#66ff66" }}>
+                              {formatCurrency(economics.rentPerResident)}
+                            </div>
+                          </div>
+                        ) : (
+                          <div /> // Empty cell for spacing
+                        )}
+                        {economics.maxResidents ? (
+                          <div>
+                            <div style={{ opacity: 0.8, fontSize: 11, marginBottom: 2 }}>
+                              Max Residents:
+                            </div>
+                            <div style={{ fontSize: 13, fontWeight: "bold" }}>
+                              {economics.maxResidents} citizen{economics.maxResidents !== 1 ? "s" : ""}
+                            </div>
+                          </div>
+                        ) : (
+                          <div /> // Empty cell for spacing
+                        )}
+                      </>
+                    )}
+                    {/* For non-residential buildings, show income per visit if available */}
+                    {building.category !== "residential" && economics.incomePerInteraction && (
+                      <div>
+                        <div style={{ opacity: 0.8, fontSize: 11, marginBottom: 2 }}>
+                          Income per Visit:
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: "bold", color: "#66ff66" }}>
+                          {formatCurrency(economics.incomePerInteraction)}
+                        </div>
+                      </div>
+                    )}
+                    {/* Show rent for non-residential if it exists (shouldn't normally, but just in case) */}
+                    {building.category !== "residential" && economics.rentPerResident && (
+                      <div>
+                        <div style={{ opacity: 0.8, fontSize: 11, marginBottom: 2 }}>
+                          Rent per Resident:
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: "bold", color: "#66ff66" }}>
+                          {formatCurrency(economics.rentPerResident)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ opacity: 0.7, fontSize: 13 }}>
+                Hover over a building to see details
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

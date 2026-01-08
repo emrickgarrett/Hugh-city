@@ -83,6 +83,69 @@ export interface Car {
   carType: CarType;
 }
 
+// Money and economy types
+export interface Bank {
+  id: string;
+  name: string;
+  loanAmount: number;
+  interestRate: number; // Monthly interest rate as decimal (e.g., 0.05 = 5%)
+}
+
+export interface ActiveLoan {
+  bankId: string;
+  principal: number; // Original loan amount
+  remainingBalance: number; // Current balance
+  interestRate: number; // Monthly interest rate
+  monthsInDefault: number; // Consecutive months unable to pay
+}
+
+export interface GameEconomy {
+  money: number;
+  activeLoans: ActiveLoan[];
+}
+
+// Time system types
+export enum GameSpeed {
+  Paused = 0,
+  Normal = 1,
+  Fast = 2,
+}
+
+export interface GameTime {
+  year: number;
+  month: number; // 1-12
+  day: number; // 1-31
+  hour: number; // 0-23
+  minute: number; // 0-59
+  dayProgress: number; // 0-1, progress through current day
+}
+
+// Building economics
+export interface BuildingEconomics {
+  buildCost: number;
+  monthlyOperatingCost: number;
+  incomePerInteraction?: number; // For businesses/churches/offices
+  rentPerResident?: number; // For residential buildings
+  maxResidents?: number; // For residential buildings
+}
+
+// Extended Character with residence and destination
+export interface CharacterWithResidence extends Character {
+  residenceX?: number; // Grid X of residence origin
+  residenceY?: number; // Grid Y of residence origin
+  currentDestination?: { x: number; y: number; buildingId?: string; buildingOriginX?: number; buildingOriginY?: number }; // Where they're heading
+  interactionCooldown?: number; // Time until they can interact with a building again
+  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home";
+  stuckCounter?: number; // Counter to detect if stuck in place
+  lastPosition?: { x: number; y: number }; // Last tile position to detect if stuck
+  name?: string; // Citizen's name (editable by player)
+  money?: number; // Current money the citizen has
+  dailyBudget?: number; // How much money they get each day
+  rentPaid?: boolean; // Whether they've paid rent this month
+  lastFailedBuildingKey?: string; // Building key that was recently full (to avoid re-selecting)
+  brokeUntilNextDay?: boolean; // True if citizen has run out of money and is waiting for next day
+}
+
 export const GRID_WIDTH = 48;
 export const GRID_HEIGHT = 48;
 

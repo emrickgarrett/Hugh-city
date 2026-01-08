@@ -10,6 +10,11 @@ import {
   VisualSettings,
   GRID_WIDTH,
   GRID_HEIGHT,
+  GameEconomy,
+  GameTime,
+  GameSpeed,
+  Bank,
+  ActiveLoan,
 } from "./types";
 import {
   ROAD_SEGMENT_SIZE,
@@ -56,6 +61,13 @@ import MusicPlayer from "../ui/MusicPlayer";
 import LoadWindow from "../ui/LoadWindow";
 import Modal from "../ui/Modal";
 import PromptModal from "../ui/PromptModal";
+import MoneyDisplay from "../ui/MoneyDisplay";
+import BankWindow from "../ui/BankWindow";
+import TimeTracker from "../ui/TimeTracker";
+import BuildingInfoWindow, { BuildingStats } from "../ui/BuildingInfoWindow";
+import CitizenInfoWindow, { CitizenData } from "../ui/CitizenInfoWindow";
+import CitizenListWindow, { CitizenListItem } from "../ui/CitizenListWindow";
+import { getBuildingEconomics, ROAD_COSTS } from "@/app/data/buildings";
 
 // Initialize empty grid
 const createEmptyGrid = (): GridCell[][] => {
@@ -141,6 +153,58 @@ export default function GameBoard() {
   // Mobile warning state
   const [isMobile, setIsMobile] = useState(false);
   const [mobileWarningDismissed, setMobileWarningDismissed] = useState(false);
+
+  // Economy state
+  const [economy, setEconomy] = useState<GameEconomy>({
+    money: 10000, // Starting money
+    activeLoans: [],
+  });
+
+  // Time state
+  const [gameTime, setGameTime] = useState<GameTime>({
+    year: 1995,
+    month: 1,
+    day: 1,
+    hour: 6,
+    minute: 0,
+    dayProgress: 0,
+  });
+
+  const [gameSpeed, setGameSpeed] = useState<GameSpeed>(GameSpeed.Normal);
+  const [isBankWindowVisible, setIsBankWindowVisible] = useState(false);
+
+  // Building stats tracking
+  const [buildingStats, setBuildingStats] = useState<Map<string, BuildingStats>>(new Map());
+  const [selectedBuildingStats, setSelectedBuildingStats] = useState<BuildingStats | null>(null);
+  const [isBuildingInfoVisible, setIsBuildingInfoVisible] = useState(false);
+  const [characterNames, setCharacterNames] = useState<Map<string, string>>(new Map()); // Track character names
+
+  // Citizen info tracking
+  const [selectedCitizenData, setSelectedCitizenData] = useState<CitizenData | null>(null);
+  const [isCitizenInfoVisible, setIsCitizenInfoVisible] = useState(false);
+  const [isCitizenListVisible, setIsCitizenListVisible] = useState(false);
+
+  // Banks configuration
+  const banks: Bank[] = [
+    {
+      id: "first-national",
+      name: "First National Bank",
+      loanAmount: 50000,
+      interestRate: 0.05, // 5% per month
+    },
+    {
+      id: "city-trust",
+      name: "City Trust Bank",
+      loanAmount: 100000,
+      interestRate: 0.07, // 7% per month
+    },
+    {
+      id: "metropolitan-bank",
+      name: "Metropolitan Bank",
+      loanAmount: 200000,
+      interestRate: 0.1, // 10% per month
+    },
+  ];
 
   // Detect mobile device
   useEffect(() => {
@@ -251,6 +315,579 @@ export default function GameBoard() {
     }
   }, [isPlayerDriving]);
 
+  // Process monthly loan payments, operating costs, and rent collection
+  const processMonthlyPayments = useCallback(() => {
+    if (!phaserGameRef.current) return;
+
+    // First, process citizen rent payments and evictions
+    const citizens = phaserGameRef.current.getAllCitizens();
+    let totalRentCollected = 0;
+    const evictedCitizens: string[] = [];
+
+    for (const citizen of citizens) {
+      if (citizen.residenceX !== undefined && citizen.residenceY !== undefined) {
+        const residenceBuildingId = phaserGameRef.current.getCitizenResidenceBuildingId(citizen.id);
+        if (residenceBuildingId) {
+          const building = getBuilding(residenceBuildingId);
+          if (building) {
+            const economics = getBuildingEconomics(building);
+            const rentAmount = economics.rentPerResident || 0;
+
+            // Try to collect rent from citizen
+            const result = phaserGameRef.current.processRentPayment(citizen.id, rentAmount);
+            if (result) {
+              if (result.paid) {
+                totalRentCollected += result.amount;
+              } else {
+                // Citizen can't pay - evict them
+                evictedCitizens.push(citizen.id);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Evict citizens who couldn't pay
+    for (const citizenId of evictedCitizens) {
+      phaserGameRef.current.evictCitizen(citizenId);
+    }
+
+    // Reset rent status for next month
+    phaserGameRef.current.resetRentStatus();
+
+    // Show eviction notification if any
+    if (evictedCitizens.length > 0) {
+      setModalState({
+        isVisible: true,
+        title: "Eviction Notice",
+        message: `${evictedCitizens.length} citizen(s) could not afford rent and have been evicted from their homes.`,
+      });
+    }
+
+    // Now process city finances
+    setEconomy((prev) => {
+      const newEconomy = { ...prev, activeLoans: [...prev.activeLoans] };
+      let totalCosts = 0;
+
+      // Calculate operating costs for all buildings and roads
+      const roadSegments = new Set<string>();
+      for (let y = 0; y < GRID_HEIGHT; y++) {
+        for (let x = 0; x < GRID_WIDTH; x++) {
+          const cell = grid[y][x];
+          if (cell.type === TileType.Road || cell.type === TileType.Asphalt) {
+            if (cell.originX !== undefined && cell.originY !== undefined) {
+              roadSegments.add(`${cell.originX},${cell.originY}`);
+            }
+          } else if (cell.type === TileType.Building && cell.buildingId && cell.isOrigin) {
+            const building = getBuilding(cell.buildingId);
+            if (building) {
+              const economics = getBuildingEconomics(building);
+              totalCosts += economics.monthlyOperatingCost;
+            }
+          }
+        }
+      }
+
+      // Add road operating costs
+      totalCosts += roadSegments.size * ROAD_COSTS.monthlyOperatingCost;
+
+      // Process loan payments
+      for (let i = 0; i < newEconomy.activeLoans.length; i++) {
+        const loan = newEconomy.activeLoans[i];
+        const monthlyPayment = loan.remainingBalance * loan.interestRate;
+
+        if (newEconomy.money >= monthlyPayment) {
+          // Can pay
+          newEconomy.money -= monthlyPayment;
+          loan.remainingBalance -= monthlyPayment;
+          loan.monthsInDefault = 0;
+        } else {
+          // Cannot pay - go into default
+          newEconomy.money -= monthlyPayment; // Go negative
+          loan.monthsInDefault += 1;
+
+          // Check for game over (3 months in default)
+          if (loan.monthsInDefault >= 3) {
+            setModalState({
+              isVisible: true,
+              title: "Game Over",
+              message: `You have been unable to pay your loan to ${banks.find((b) => b.id === loan.bankId)?.name} for 3 months. The bank has foreclosed on your city.`,
+              onConfirm: () => {
+                // Reset game
+                setEconomy({ money: 10000, activeLoans: [] });
+                setGameTime({ year: 1995, month: 1, day: 1, hour: 6, minute: 0, dayProgress: 0 });
+                setGrid(createEmptyGrid());
+                phaserGameRef.current?.clearCharacters();
+                phaserGameRef.current?.clearCars();
+              },
+            });
+          }
+        }
+      }
+
+      // Deduct operating costs
+      newEconomy.money -= totalCosts;
+
+      // Add rent income (collected from citizens)
+      newEconomy.money += totalRentCollected;
+
+      return newEconomy;
+    });
+  }, [grid, banks]);
+
+  // Track previous month and day to detect changes
+  const prevMonthRef = useRef(gameTime.month);
+  const prevDayRef = useRef(gameTime.day);
+  
+  // Process monthly payments when month changes
+  useEffect(() => {
+    if (gameTime.month !== prevMonthRef.current && gameTime.month > prevMonthRef.current) {
+      processMonthlyPayments();
+      
+      // Reset monthly building stats
+      setBuildingStats((prev) => {
+        const newStats = new Map(prev);
+        for (const [key, stats] of newStats) {
+          newStats.set(key, {
+            ...stats,
+            monthlyRevenue: 0,
+            interactionsThisMonth: 0,
+          });
+        }
+        return newStats;
+      });
+    }
+    prevMonthRef.current = gameTime.month;
+  }, [gameTime.month, processMonthlyPayments]);
+
+  // Reset citizen daily money when day changes
+  useEffect(() => {
+    if (gameTime.day !== prevDayRef.current) {
+      if (phaserGameRef.current) {
+        phaserGameRef.current.resetDailyMoney();
+      }
+    }
+    prevDayRef.current = gameTime.day;
+  }, [gameTime.day]);
+
+  // Time progression system
+  useEffect(() => {
+    if (gameSpeed === GameSpeed.Paused) return;
+
+    // Each day is ~1 minute (60 seconds)
+    // Normal speed: 1 day per 60 seconds
+    // Fast speed (2x): 1 day per 30 seconds
+    const dayDuration = gameSpeed === GameSpeed.Normal ? 60000 : 30000;
+    const interval = 100; // Update every 100ms for smooth progression
+
+    const timer = setInterval(() => {
+      setGameTime((prev) => {
+        const newTime = { ...prev };
+        const progressIncrement = (interval / dayDuration) * gameSpeed;
+        newTime.dayProgress += progressIncrement;
+
+        // Update time as day progresses
+        const totalMinutes = newTime.dayProgress * 1440; // 1440 minutes in a day
+        newTime.hour = Math.floor(totalMinutes / 60) % 24;
+        newTime.minute = Math.floor(totalMinutes % 60);
+
+        // Advance day when progress reaches 1
+        if (newTime.dayProgress >= 1) {
+          newTime.dayProgress = 0;
+          newTime.day += 1;
+          newTime.hour = 0;
+          newTime.minute = 0;
+
+          // Check for month end
+          const daysInMonth = new Date(newTime.year, newTime.month, 0).getDate();
+          if (newTime.day > daysInMonth) {
+            newTime.day = 1;
+            newTime.month += 1;
+
+            // Check for year end
+            if (newTime.month > 12) {
+              newTime.month = 1;
+              newTime.year += 1;
+            }
+          }
+        }
+
+        return newTime;
+      });
+    }, interval);
+
+    return () => clearInterval(timer);
+  }, [gameSpeed]);
+
+  // Sync game speed with Phaser (affects citizen/car speeds)
+  useEffect(() => {
+    if (phaserGameRef.current) {
+      phaserGameRef.current.setGameSpeed(gameSpeed);
+    }
+  }, [gameSpeed]);
+
+  // Loan handling functions
+  const handleTakeLoan = useCallback(
+    (bankId: string) => {
+      const bank = banks.find((b) => b.id === bankId);
+      if (!bank) return;
+
+      // Check if already has loan from this bank
+      if (economy.activeLoans.some((loan) => loan.bankId === bankId)) {
+        setModalState({
+          isVisible: true,
+          title: "Cannot Take Loan",
+          message: "You already have an active loan from this bank. Pay it off first!",
+        });
+        return;
+      }
+
+      setEconomy((prev) => {
+        const newLoan: ActiveLoan = {
+          bankId: bank.id,
+          principal: bank.loanAmount,
+          remainingBalance: bank.loanAmount,
+          interestRate: bank.interestRate,
+          monthsInDefault: 0,
+        };
+
+        return {
+          money: prev.money + bank.loanAmount,
+          activeLoans: [...prev.activeLoans, newLoan],
+        };
+      });
+    },
+    [economy.activeLoans, banks]
+  );
+
+  const handlePayLoan = useCallback(
+    (bankId: string) => {
+      const loan = economy.activeLoans.find((l) => l.bankId === bankId);
+      if (!loan) return;
+
+      if (economy.money < loan.remainingBalance) {
+        setModalState({
+          isVisible: true,
+          title: "Insufficient Funds",
+          message: `You need ${loan.remainingBalance.toLocaleString()} to pay off this loan.`,
+        });
+        return;
+      }
+
+      setEconomy((prev) => ({
+        money: prev.money - loan.remainingBalance,
+        activeLoans: prev.activeLoans.filter((l) => l.bankId !== bankId),
+      }));
+    },
+    [economy]
+  );
+
+  // Check if player can afford a building/road
+  const canAffordBuilding = useCallback(
+    (buildingId: string): boolean => {
+      const building = getBuilding(buildingId);
+      if (!building) return false;
+      const economics = getBuildingEconomics(building);
+      return economy.money >= economics.buildCost;
+    },
+    [economy.money]
+  );
+
+  const canAffordRoad = useCallback((): boolean => {
+    return economy.money >= ROAD_COSTS.buildCost;
+  }, [economy.money]);
+
+  // Handle building interactions (income generation and move-ins)
+  const handleBuildingInteraction = useCallback(
+    (
+      buildingId: string,
+      buildingOriginX: number,
+      buildingOriginY: number,
+      interactionType: "income" | "move_in",
+      characterId?: string
+    ) => {
+      const building = getBuilding(buildingId);
+      if (!building) return;
+
+      const economics = getBuildingEconomics(building);
+      const buildingKey = `${buildingOriginX},${buildingOriginY}`;
+
+      if (interactionType === "income" && economics.incomePerInteraction) {
+        // Generate income from business interaction
+        setEconomy((prev) => ({
+          ...prev,
+          money: prev.money + economics.incomePerInteraction!,
+        }));
+
+        // Update building stats
+        setBuildingStats((prev) => {
+          const newStats = new Map(prev);
+          const existing = newStats.get(buildingKey) || {
+            buildingId,
+            originX: buildingOriginX,
+            originY: buildingOriginY,
+            residents: [],
+            totalRevenue: 0,
+            monthlyRevenue: 0,
+            interactionsThisMonth: 0,
+          };
+          newStats.set(buildingKey, {
+            ...existing,
+            totalRevenue: existing.totalRevenue + economics.incomePerInteraction!,
+            monthlyRevenue: existing.monthlyRevenue + economics.incomePerInteraction!,
+            interactionsThisMonth: existing.interactionsThisMonth + 1,
+          });
+          return newStats;
+        });
+      }
+
+      if (interactionType === "move_in" && characterId) {
+        // Update building stats for move-in
+        setBuildingStats((prev) => {
+          const newStats = new Map(prev);
+          const existing = newStats.get(buildingKey) || {
+            buildingId,
+            originX: buildingOriginX,
+            originY: buildingOriginY,
+            residents: [],
+            totalRevenue: 0,
+            monthlyRevenue: 0,
+            interactionsThisMonth: 0,
+          };
+          // Add resident if not already there
+          if (!existing.residents.includes(characterId)) {
+            newStats.set(buildingKey, {
+              ...existing,
+              residents: [...existing.residents, characterId],
+            });
+          }
+          return newStats;
+        });
+      }
+    },
+    []
+  );
+
+  // Handle building click (show building info)
+  const handleBuildingClick = useCallback(
+    (buildingId: string, originX: number, originY: number) => {
+      const buildingKey = `${originX},${originY}`;
+      
+      // Get or create building stats
+      const existingStats = buildingStats.get(buildingKey);
+      const stats: BuildingStats = existingStats || {
+        buildingId,
+        originX,
+        originY,
+        residents: [],
+        totalRevenue: 0,
+        monthlyRevenue: 0,
+        interactionsThisMonth: 0,
+      };
+
+      // Get residents from Phaser if available
+      if (phaserGameRef.current) {
+        const residentCount = phaserGameRef.current.getBuildingResidentCount(originX, originY);
+        // If we have more residents in Phaser than in stats, sync them
+        // (This is a fallback - normally stats should be updated via callbacks)
+        if (residentCount > stats.residents.length) {
+          // We don't have the character IDs here, but at least show the count is correct
+          // The residents array will be populated through move_in callbacks
+        }
+      }
+
+      setSelectedBuildingStats(stats);
+      setIsBuildingInfoVisible(true);
+    },
+    [buildingStats]
+  );
+
+  // Handle citizen click (show citizen info)
+  const handleCitizenClick = useCallback(
+    (citizenId: string) => {
+      if (!phaserGameRef.current) return;
+
+      const citizen = phaserGameRef.current.getCitizenData(citizenId);
+      if (!citizen) return;
+
+      // Get residence building ID
+      const residenceBuildingId = phaserGameRef.current.getCitizenResidenceBuildingId(citizenId);
+
+      // Calculate monthly rent if they have a residence
+      let monthlyRent = 0;
+      if (residenceBuildingId) {
+        const building = getBuilding(residenceBuildingId);
+        if (building) {
+          const economics = getBuildingEconomics(building);
+          monthlyRent = economics.rentPerResident || 0;
+        }
+      }
+
+      // Get destination building name if heading somewhere
+      let destinationBuildingName: string | undefined;
+      if (citizen.currentDestination?.buildingId) {
+        const destBuilding = getBuilding(citizen.currentDestination.buildingId);
+        if (destBuilding) {
+          destinationBuildingName = destBuilding.name;
+        }
+      }
+
+      const citizenData: CitizenData = {
+        id: citizen.id,
+        name: citizen.name || `Citizen ${citizen.id.slice(0, 6)}`,
+        money: citizen.money ?? 0,
+        dailyBudget: citizen.dailyBudget ?? 100,
+        characterType: citizen.characterType,
+        residenceX: citizen.residenceX,
+        residenceY: citizen.residenceY,
+        residenceBuildingId,
+        rentPaid: citizen.rentPaid ?? false,
+        state: citizen.state,
+        destinationBuildingName,
+      };
+
+      // Update character names map
+      setCharacterNames((prev) => {
+        const newMap = new Map(prev);
+        newMap.set(citizen.id, citizenData.name);
+        return newMap;
+      });
+
+      setSelectedCitizenData({ ...citizenData, monthlyRent } as CitizenData & { monthlyRent: number });
+      setIsCitizenInfoVisible(true);
+    },
+    []
+  );
+
+  // Refresh citizen data while info window is open
+  useEffect(() => {
+    if (!isCitizenInfoVisible || !selectedCitizenData) return;
+
+    const refreshInterval = setInterval(() => {
+      if (!phaserGameRef.current) return;
+
+      const citizen = phaserGameRef.current.getCitizenData(selectedCitizenData.id);
+      if (!citizen) {
+        // Citizen no longer exists, close the window
+        setIsCitizenInfoVisible(false);
+        setSelectedCitizenData(null);
+        return;
+      }
+
+      // Get residence building ID
+      const residenceBuildingId = phaserGameRef.current.getCitizenResidenceBuildingId(citizen.id);
+
+      // Calculate monthly rent if they have a residence
+      let monthlyRent = 0;
+      if (residenceBuildingId) {
+        const building = getBuilding(residenceBuildingId);
+        if (building) {
+          const economics = getBuildingEconomics(building);
+          monthlyRent = economics.rentPerResident || 0;
+        }
+      }
+
+      // Get destination building name if heading somewhere
+      let destinationBuildingName: string | undefined;
+      if (citizen.currentDestination?.buildingId) {
+        const destBuilding = getBuilding(citizen.currentDestination.buildingId);
+        if (destBuilding) {
+          destinationBuildingName = destBuilding.name;
+        }
+      }
+
+      const updatedData: CitizenData = {
+        id: citizen.id,
+        name: citizen.name || `Citizen ${citizen.id.slice(0, 6)}`,
+        money: citizen.money ?? 0,
+        dailyBudget: citizen.dailyBudget ?? 100,
+        characterType: citizen.characterType,
+        residenceX: citizen.residenceX,
+        residenceY: citizen.residenceY,
+        residenceBuildingId,
+        rentPaid: citizen.rentPaid ?? false,
+        state: citizen.state,
+        destinationBuildingName,
+      };
+
+      setSelectedCitizenData({ ...updatedData, monthlyRent } as CitizenData & { monthlyRent: number });
+    }, 500); // Refresh every 500ms
+
+    return () => clearInterval(refreshInterval);
+  }, [isCitizenInfoVisible, selectedCitizenData?.id]);
+
+  // Handle citizen name change
+  const handleCitizenNameChange = useCallback(
+    (citizenId: string, newName: string) => {
+      if (phaserGameRef.current) {
+        phaserGameRef.current.updateCitizenName(citizenId, newName);
+        
+        // Update character names map
+        setCharacterNames((prev) => {
+          const newMap = new Map(prev);
+          newMap.set(citizenId, newName);
+          return newMap;
+        });
+
+        // Update selected citizen data if it's the same citizen
+        setSelectedCitizenData((prev) => {
+          if (prev && prev.id === citizenId) {
+            return { ...prev, name: newName };
+          }
+          return prev;
+        });
+      }
+    },
+    []
+  );
+
+  // Handle citizen spending (sync money from Phaser to React)
+  const handleCitizenSpend = useCallback(
+    (citizenId: string, amount: number) => {
+      // This is just for tracking - the actual money is managed in Phaser
+      // We could track spending stats here if needed
+    },
+    []
+  );
+
+  // Get monthly rent for the selected citizen
+  const getSelectedCitizenRent = useCallback((): number => {
+    if (!selectedCitizenData || !selectedCitizenData.residenceBuildingId) return 0;
+    const building = getBuilding(selectedCitizenData.residenceBuildingId);
+    if (!building) return 0;
+    const economics = getBuildingEconomics(building);
+    return economics.rentPerResident || 0;
+  }, [selectedCitizenData]);
+
+  // Get list of all citizens for the citizen list window
+  const getCitizenList = useCallback((): CitizenListItem[] => {
+    if (!phaserGameRef.current) return [];
+    
+    const citizens = phaserGameRef.current.getAllCitizens();
+    return citizens.map((citizen) => {
+      const residenceBuildingId = citizen.residenceX !== undefined 
+        ? phaserGameRef.current?.getCitizenResidenceBuildingId(citizen.id)
+        : undefined;
+      const residenceBuilding = residenceBuildingId ? getBuilding(residenceBuildingId) : null;
+      
+      return {
+        id: citizen.id,
+        name: citizen.name || `Citizen ${citizen.id.slice(0, 6)}`,
+        money: citizen.money ?? 0,
+        characterType: citizen.characterType,
+        hasResidence: citizen.residenceX !== undefined,
+        residenceBuildingName: residenceBuilding?.name,
+      };
+    });
+  }, []);
+
+  // Handle citizen click from list - open their info window
+  const handleCitizenListClick = useCallback((citizenId: string) => {
+    setIsCitizenListVisible(false);
+    handleCitizenClick(citizenId);
+  }, [handleCitizenClick]);
+
   // Handle tile click (grid modifications)
   const handleTileClick = useCallback(
     (x: number, y: number) => {
@@ -262,6 +899,15 @@ export default function GameBoard() {
             break;
           }
           case ToolType.RoadNetwork: {
+            // Check if can afford road
+            if (!canAffordRoad()) {
+              setModalState({
+                isVisible: true,
+                title: "Insufficient Funds",
+                message: `You need $${ROAD_COSTS.buildCost} to build a road segment.`,
+              });
+              break;
+            }
             const segmentOrigin = getRoadSegmentOrigin(x, y);
             const placementCheck = canPlaceRoadSegment(
               newGrid,
@@ -303,6 +949,11 @@ export default function GameBoard() {
                 }
               }
             }
+            // Deduct road cost
+            setEconomy((prev) => ({
+              ...prev,
+              money: prev.money - ROAD_COSTS.buildCost,
+            }));
             playBuildRoadSound();
             break;
           }
@@ -397,6 +1048,17 @@ export default function GameBoard() {
             const building = getBuilding(selectedBuildingId);
             if (!building) break;
 
+            // Check if can afford building
+            if (!canAffordBuilding(selectedBuildingId)) {
+              const economics = getBuildingEconomics(building);
+              setModalState({
+                isVisible: true,
+                title: "Insufficient Funds",
+                message: `You need $${economics.buildCost.toLocaleString()} to build ${building.name}.`,
+              });
+              break;
+            }
+
             // Get footprint based on current orientation
             const footprint = getBuildingFootprint(
               building,
@@ -472,6 +1134,12 @@ export default function GameBoard() {
                 }
               }
             }
+            // Deduct building cost
+            const economics = getBuildingEconomics(building);
+            setEconomy((prev) => ({
+              ...prev,
+              money: prev.money - economics.buildCost,
+            }));
             playBuildSound();
             // Trigger screen shake effect (like SimCity 4)
             if (phaserGameRef.current) {
@@ -583,7 +1251,7 @@ export default function GameBoard() {
         return newGrid;
       });
     },
-    [selectedTool, selectedBuildingId, buildingOrientation]
+    [selectedTool, selectedBuildingId, buildingOrientation, canAffordBuilding, canAffordRoad]
   );
 
   // Handle batch tile placement from drag operations (snow/tile tools)
@@ -955,6 +1623,9 @@ export default function GameBoard() {
     zoom?: number;
     visualSettings?: VisualSettings;
     timestamp: number;
+    economy?: GameEconomy;
+    gameTime?: GameTime;
+    gameSpeed?: GameSpeed;
   }
 
   const handleSaveGame = useCallback(() => {
@@ -985,6 +1656,9 @@ export default function GameBoard() {
             zoom,
             visualSettings,
             timestamp: Date.now(),
+            economy,
+            gameTime,
+            gameSpeed,
           };
 
           try {
@@ -1026,6 +1700,9 @@ export default function GameBoard() {
             zoom,
             visualSettings,
             timestamp: Date.now(),
+            economy,
+            gameTime,
+            gameSpeed,
           };
 
           try {
@@ -1067,6 +1744,15 @@ export default function GameBoard() {
       }
       if (saveData.visualSettings) {
         setVisualSettings(saveData.visualSettings);
+      }
+      if (saveData.economy) {
+        setEconomy(saveData.economy);
+      }
+      if (saveData.gameTime) {
+        setGameTime(saveData.gameTime);
+      }
+      if (saveData.gameSpeed !== undefined) {
+        setGameSpeed(saveData.gameSpeed);
       }
 
       // Wait for grid to update, then spawn characters and cars
@@ -1535,18 +2221,149 @@ export default function GameBoard() {
         </button>
       </div>
 
-      {/* Bottom right - Music player */}
+      {/* Top Right - Time Tracker (to the left of build menu) */}
+      <TimeTracker
+        gameTime={gameTime}
+        gameSpeed={gameSpeed}
+        onSpeedChange={setGameSpeed}
+        positionRight={98} // Position to the left of build menu (48px build + 48px eraser + 2px margin)
+      />
+
+      {/* Bottom right - Money display and Music player */}
       <div
         style={{
           position: "absolute",
           bottom: 0,
           right: 0,
           zIndex: 1000,
+          display: "flex",
+          alignItems: "flex-end",
         }}
         onWheel={(e) => e.stopPropagation()}
       >
+        {/* Citizens button */}
+        <button
+          onClick={() => {
+            setIsCitizenListVisible(true);
+            playDoubleClickSound();
+          }}
+          title="View Citizens"
+          style={{
+            background: "#5a5a5a",
+            border: "2px solid",
+            borderColor: "#7a7a7a #3a3a3a #3a3a3a #7a7a7a",
+            borderTop: "none",
+            padding: 0,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 0,
+            boxShadow: "1px 1px 0px #2a2a2a",
+            imageRendering: "pixelated",
+            transition: "filter 0.1s",
+            width: 48,
+            height: 48,
+            fontSize: 24,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.1)")}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+          onMouseDown={(e) => {
+            e.currentTarget.style.filter = "brightness(0.9)";
+            e.currentTarget.style.borderColor = "#3a3a3a #7a7a7a #7a7a7a #3a3a3a";
+            e.currentTarget.style.transform = "translate(1px, 1px)";
+            e.currentTarget.style.boxShadow = "inset 1px 1px 0px #2a2a2a";
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.filter = "brightness(1.1)";
+            e.currentTarget.style.borderColor = "#7a7a7a #3a3a3a #3a3a3a #7a7a7a";
+            e.currentTarget.style.transform = "none";
+            e.currentTarget.style.boxShadow = "1px 1px 0px #2a2a2a";
+          }}
+        >
+          👥
+        </button>
+        {/* Bank button */}
+        <button
+          onClick={() => {
+            setIsBankWindowVisible(true);
+            playDoubleClickSound();
+          }}
+          title="Bank Loans"
+          style={{
+            background: "#5a5a5a",
+            border: "2px solid",
+            borderColor: "#7a7a7a #3a3a3a #3a3a3a #7a7a7a",
+            borderTop: "none",
+            padding: 0,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 0,
+            boxShadow: "1px 1px 0px #2a2a2a",
+            imageRendering: "pixelated",
+            transition: "filter 0.1s",
+            width: 48,
+            height: 48,
+            fontSize: 24,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.1)")}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+          onMouseDown={(e) => {
+            e.currentTarget.style.filter = "brightness(0.9)";
+            e.currentTarget.style.borderColor = "#3a3a3a #7a7a7a #7a7a7a #3a3a3a";
+            e.currentTarget.style.transform = "translate(1px, 1px)";
+            e.currentTarget.style.boxShadow = "inset 1px 1px 0px #2a2a2a";
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.filter = "brightness(1.1)";
+            e.currentTarget.style.borderColor = "#7a7a7a #3a3a3a #3a3a3a #7a7a7a";
+            e.currentTarget.style.transform = "none";
+            e.currentTarget.style.boxShadow = "1px 1px 0px #2a2a2a";
+          }}
+        >
+          🏦
+        </button>
+        <MoneyDisplay money={economy.money} />
         <MusicPlayer />
       </div>
+
+      {/* Bank Window */}
+      <BankWindow
+        isVisible={isBankWindowVisible}
+        onClose={() => setIsBankWindowVisible(false)}
+        banks={banks}
+        activeLoans={economy.activeLoans}
+        currentMoney={economy.money}
+        onTakeLoan={handleTakeLoan}
+        onPayLoan={handlePayLoan}
+      />
+
+      {/* Building Info Window */}
+      <BuildingInfoWindow
+        isVisible={isBuildingInfoVisible}
+        onClose={() => setIsBuildingInfoVisible(false)}
+        buildingStats={selectedBuildingStats}
+        characterNames={characterNames}
+      />
+
+      {/* Citizen Info Window */}
+      <CitizenInfoWindow
+        isVisible={isCitizenInfoVisible}
+        onClose={() => setIsCitizenInfoVisible(false)}
+        citizen={selectedCitizenData}
+        onNameChange={handleCitizenNameChange}
+        monthlyRent={getSelectedCitizenRent()}
+      />
+
+      {/* Citizen List Window */}
+      <CitizenListWindow
+        isVisible={isCitizenListVisible}
+        onClose={() => setIsCitizenListVisible(false)}
+        citizens={getCitizenList()}
+        onCitizenClick={handleCitizenListClick}
+      />
 
       {/* Main game area */}
       <div
@@ -1591,6 +2408,10 @@ export default function GameBoard() {
             onZoomChange={handleZoomChange}
             showPaths={debugPaths}
             showStats={showStats}
+            onBuildingInteraction={handleBuildingInteraction}
+            onBuildingClick={handleBuildingClick}
+            onCitizenClick={handleCitizenClick}
+            onCitizenSpend={handleCitizenSpend}
           />
         </div>
 

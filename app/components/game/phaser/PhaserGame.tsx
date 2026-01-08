@@ -10,7 +10,9 @@ import {
 import Phaser from "phaser";
 import { MainScene, SceneEvents } from "./MainScene";
 import { createGameConfig } from "./gameConfig";
-import { GridCell, ToolType, Direction, Car } from "../types";
+import { GridCell, ToolType, Direction, Car, GameSpeed } from "../types";
+
+import { CharacterWithResidence } from "../types";
 
 // Exposed methods for parent component
 export interface PhaserGameHandle {
@@ -25,6 +27,18 @@ export interface PhaserGameHandle {
   clearCars: () => void;
   shakeScreen: (axis?: "x" | "y", intensity?: number, duration?: number) => void;
   zoomAtPoint: (zoom: number, screenX: number, screenY: number) => void;
+  setGameSpeed: (speed: GameSpeed) => void;
+  getBuildingResidentCount: (originX: number, originY: number) => number;
+  // Citizen management
+  getCitizenData: (citizenId: string) => CharacterWithResidence | null;
+  getAllCitizens: () => CharacterWithResidence[];
+  updateCitizenName: (citizenId: string, newName: string) => void;
+  updateCitizenMoney: (citizenId: string, amount: number) => void;
+  resetDailyMoney: () => void;
+  resetRentStatus: () => void;
+  processRentPayment: (citizenId: string, rentAmount: number) => { paid: boolean; amount: number } | null;
+  evictCitizen: (citizenId: string) => boolean;
+  getCitizenResidenceBuildingId: (citizenId: string) => string | undefined;
 }
 
 interface PhaserGameProps {
@@ -41,6 +55,10 @@ interface PhaserGameProps {
   onZoomChange?: (zoom: number) => void;
   showPaths?: boolean;
   showStats?: boolean;
+  onBuildingInteraction?: (buildingId: string, buildingOriginX: number, buildingOriginY: number, interactionType: "income" | "move_in", characterId?: string) => void;
+  onBuildingClick?: (buildingId: string, originX: number, originY: number) => void;
+  onCitizenClick?: (citizenId: string) => void;
+  onCitizenSpend?: (citizenId: string, amount: number) => void;
 }
 
 const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
@@ -59,6 +77,10 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
       onZoomChange,
       showPaths = false,
       showStats = true,
+      onBuildingInteraction,
+      onBuildingClick,
+      onCitizenClick,
+      onCitizenSpend,
     },
     ref
   ) {
@@ -134,6 +156,67 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
             sceneRef.current.zoomAtPoint(zoom, screenX, screenY);
           }
         },
+        setGameSpeed: (speed: GameSpeed) => {
+          if (sceneRef.current) {
+            sceneRef.current.setGameSpeed(speed);
+          }
+        },
+        getBuildingResidentCount: (originX: number, originY: number) => {
+          if (sceneRef.current) {
+            return sceneRef.current.getBuildingResidentCount(originX, originY);
+          }
+          return 0;
+        },
+        getCitizenData: (citizenId: string) => {
+          if (sceneRef.current) {
+            return sceneRef.current.getCitizenData(citizenId);
+          }
+          return null;
+        },
+        getAllCitizens: () => {
+          if (sceneRef.current) {
+            return sceneRef.current.getAllCitizens();
+          }
+          return [];
+        },
+        updateCitizenName: (citizenId: string, newName: string) => {
+          if (sceneRef.current) {
+            sceneRef.current.updateCitizenName(citizenId, newName);
+          }
+        },
+        updateCitizenMoney: (citizenId: string, amount: number) => {
+          if (sceneRef.current) {
+            sceneRef.current.updateCitizenMoney(citizenId, amount);
+          }
+        },
+        resetDailyMoney: () => {
+          if (sceneRef.current) {
+            sceneRef.current.resetDailyMoney();
+          }
+        },
+        resetRentStatus: () => {
+          if (sceneRef.current) {
+            sceneRef.current.resetRentStatus();
+          }
+        },
+        processRentPayment: (citizenId: string, rentAmount: number) => {
+          if (sceneRef.current) {
+            return sceneRef.current.processRentPayment(citizenId, rentAmount);
+          }
+          return null;
+        },
+        evictCitizen: (citizenId: string) => {
+          if (sceneRef.current) {
+            return sceneRef.current.evictCitizen(citizenId);
+          }
+          return false;
+        },
+        getCitizenResidenceBuildingId: (citizenId: string) => {
+          if (sceneRef.current) {
+            return sceneRef.current.getCitizenResidenceBuildingId(citizenId);
+          }
+          return undefined;
+        },
       }),
       []
     );
@@ -158,6 +241,10 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
           onTilesDrag: (tiles) => onTilesDrag?.(tiles),
           onEraserDrag: (tiles) => onEraserDrag?.(tiles),
           onRoadDrag: (segments) => onRoadDrag?.(segments),
+          onBuildingInteraction: (buildingId, originX, originY, type, charId) => onBuildingInteraction?.(buildingId, originX, originY, type, charId),
+          onBuildingClick: (buildingId, originX, originY) => onBuildingClick?.(buildingId, originX, originY),
+          onCitizenClick: (citizenId) => onCitizenClick?.(citizenId),
+          onCitizenSpend: (citizenId, amount) => onCitizenSpend?.(citizenId, amount),
         };
         scene.setEventCallbacks(events);
 
@@ -237,10 +324,14 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
           onTilesDrag: (tiles) => onTilesDrag?.(tiles),
           onEraserDrag: (tiles) => onEraserDrag?.(tiles),
           onRoadDrag: (segments) => onRoadDrag?.(segments),
+          onBuildingInteraction: (buildingId, originX, originY, type, charId) => onBuildingInteraction?.(buildingId, originX, originY, type, charId),
+          onBuildingClick: (buildingId, originX, originY) => onBuildingClick?.(buildingId, originX, originY),
+          onCitizenClick: (citizenId) => onCitizenClick?.(citizenId),
+          onCitizenSpend: (citizenId, amount) => onCitizenSpend?.(citizenId, amount),
         };
         sceneRef.current.setEventCallbacks(events);
       }
-    }, [onTileClick, onTileHover, onTilesDrag, onEraserDrag, onRoadDrag]);
+    }, [onTileClick, onTileHover, onTilesDrag, onEraserDrag, onRoadDrag, onBuildingInteraction, onBuildingClick, onCitizenClick, onCitizenSpend]);
 
     return (
       <div

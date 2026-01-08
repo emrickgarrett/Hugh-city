@@ -1,6 +1,8 @@
 // Building Registry - Single source of truth for all buildings
 // Adding a new building = just add an entry here!
 
+import type { BuildingEconomics } from "../components/game/types";
+
 export type BuildingCategory =
   | "residential"
   | "commercial"
@@ -33,6 +35,7 @@ export interface BuildingDefinition {
   icon: string; // Emoji for UI
   supportsRotation?: boolean;
   isDecoration?: boolean; // If true, preserves underlying tile (like props)
+  economics?: BuildingEconomics; // Optional override, otherwise uses defaults
 }
 
 // Helper to get the correct footprint for a building based on orientation
@@ -1306,4 +1309,77 @@ export const CATEGORY_NAMES: Record<BuildingCategory, string> = {
   landmark: "Landmarks",
   props: "Props",
   christmas: "🎄 Christmas",
+};
+
+// Default economics for buildings by category
+function getDefaultEconomics(
+  building: BuildingDefinition
+): BuildingEconomics {
+  const footprint = building.footprint;
+  const area = footprint.width * footprint.height;
+
+  // Base costs scale with building size
+  const baseBuildCost = area * 500;
+  const baseOperatingCost = area * 10;
+
+  switch (building.category) {
+    case "residential":
+      return {
+        buildCost: baseBuildCost,
+        monthlyOperatingCost: baseOperatingCost,
+        rentPerResident: 50 + area * 10, // Larger buildings = more rent
+        maxResidents: Math.max(1, Math.floor(area / 2)), // 1 resident per 2 tiles
+      };
+    case "commercial":
+      return {
+        buildCost: baseBuildCost * 1.2, // Commercial costs more
+        monthlyOperatingCost: baseOperatingCost * 1.5,
+        incomePerInteraction: 20 + area * 5, // Larger businesses = more income
+      };
+    case "civic":
+      return {
+        buildCost: baseBuildCost * 1.5, // Civic buildings are expensive
+        monthlyOperatingCost: baseOperatingCost * 2,
+        incomePerInteraction: 15 + area * 3, // Schools generate income
+      };
+    case "landmark":
+      // Churches and landmarks
+      if (building.id === "church") {
+        return {
+          buildCost: baseBuildCost * 2,
+          monthlyOperatingCost: baseOperatingCost * 1.5,
+          incomePerInteraction: 25 + area * 4,
+        };
+      }
+      return {
+        buildCost: baseBuildCost * 2,
+        monthlyOperatingCost: baseOperatingCost * 1.2,
+        incomePerInteraction: 10 + area * 2,
+      };
+    case "props":
+    case "christmas":
+      // Decorations are cheap
+      return {
+        buildCost: area * 50,
+        monthlyOperatingCost: area * 2,
+      };
+    default:
+      return {
+        buildCost: baseBuildCost,
+        monthlyOperatingCost: baseOperatingCost,
+      };
+  }
+}
+
+// Get economics for a building (uses override if provided, otherwise defaults)
+export function getBuildingEconomics(
+  building: BuildingDefinition
+): BuildingEconomics {
+  return building.economics || getDefaultEconomics(building);
+}
+
+// Road costs
+export const ROAD_COSTS = {
+  buildCost: 100, // Per road segment
+  monthlyOperatingCost: 5, // Per road segment
 };

@@ -14,6 +14,8 @@ import {
   ToolType,
   CHARACTER_SPEED,
   CAR_SPEED,
+  GameSpeed,
+  CharacterWithResidence,
 } from "../types";
 import { GRID_OFFSET_X, GRID_OFFSET_Y } from "./gameConfig";
 import {
@@ -33,6 +35,7 @@ import {
   BUILDINGS,
   getBuilding,
   getBuildingFootprint,
+  getBuildingEconomics,
   BuildingDefinition,
 } from "@/app/data/buildings";
 import { loadGifAsAnimation, playGifAnimation } from "./GifLoader";
@@ -44,7 +47,37 @@ export interface SceneEvents {
   onTilesDrag?: (tiles: Array<{ x: number; y: number }>) => void;
   onEraserDrag?: (tiles: Array<{ x: number; y: number }>) => void;
   onRoadDrag?: (segments: Array<{ x: number; y: number }>) => void;
+  onBuildingInteraction?: (buildingId: string, buildingOriginX: number, buildingOriginY: number, interactionType: "income" | "move_in", characterId?: string) => void;
+  onBuildingClick?: (buildingId: string, originX: number, originY: number) => void;
+  onCitizenClick?: (citizenId: string) => void;
+  onCitizenSpend?: (citizenId: string, amount: number) => void;
 }
+
+// Random name generator
+const FIRST_NAMES = [
+  "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Quinn", "Avery",
+  "Parker", "Skyler", "Jamie", "Drew", "Sam", "Charlie", "Frankie", "Jesse",
+  "Pat", "Robin", "Terry", "Chris", "Kim", "Lee", "Dana", "Kelly",
+  "Bob", "Alice", "Dave", "Emma", "Frank", "Grace", "Henry", "Iris",
+  "Jack", "Kate", "Leo", "Maya", "Nick", "Olive", "Pete", "Rose"
+];
+
+const LAST_NAMES = [
+  "Smith", "Jones", "Brown", "Davis", "Miller", "Wilson", "Moore", "Taylor",
+  "Anderson", "Thomas", "Jackson", "White", "Harris", "Martin", "Garcia", "Lee",
+  "Walker", "Hall", "Allen", "Young", "King", "Wright", "Scott", "Green",
+  "Baker", "Hill", "Nelson", "Carter", "Mitchell", "Roberts", "Turner", "Phillips"
+];
+
+const generateRandomName = (): string => {
+  const firstName = FIRST_NAMES[Math.floor(Math.random() * FIRST_NAMES.length)];
+  const lastName = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)];
+  return `${firstName} ${lastName}`;
+};
+
+// Daily budget range for citizens
+const MIN_DAILY_BUDGET = 50;
+const MAX_DAILY_BUDGET = 150;
 
 // Generate unique ID
 const generateId = () => Math.random().toString(36).substring(2, 9);
@@ -95,8 +128,11 @@ export class MainScene extends Phaser.Scene {
 
   // Game state (owned by Phaser, not React)
   private grid: GridCell[][] = [];
-  private characters: Character[] = [];
+  private characters: CharacterWithResidence[] = [];
   private cars: Car[] = [];
+  
+  // Building occupancy tracking: building origin -> array of citizen IDs
+  private buildingOccupancy: Map<string, string[]> = new Map();
 
   // Tool state (synced from React)
   private selectedTool: ToolType = ToolType.RoadNetwork;
@@ -108,6 +144,7 @@ export class MainScene extends Phaser.Scene {
   private events_: SceneEvents = {
     onTileClick: () => {},
     onTileHover: () => {},
+    onBuildingInteraction: () => {},
   };
 
   // Zoom level
@@ -175,6 +212,9 @@ export class MainScene extends Phaser.Scene {
   private shakeElapsed: number = 0;
   // Number of oscillations during the shake (must be an integer so it ends at exactly 0)
   private shakeCycles: number = 3;
+
+  // Game speed multiplier
+  private gameSpeed: GameSpeed = GameSpeed.Normal;
 
   constructor() {
     super({ key: "MainScene" });
@@ -484,18 +524,56 @@ export class MainScene extends Phaser.Scene {
     const gy = Math.floor(y);
     if (gx < 0 || gx >= GRID_WIDTH || gy < 0 || gy >= GRID_HEIGHT) return false;
     const tileType = this.grid[gy][gx].type;
+    // Citizens can walk on sidewalks (Road/Tile) and also on roads (Asphalt) to cross
+    return tileType === TileType.Road || tileType === TileType.Tile || tileType === TileType.Asphalt;
+  }
+
+  // Check if a tile is a preferred walking surface (sidewalk, not street)
+  private isSidewalk(x: number, y: number): boolean {
+    const gx = Math.floor(x);
+    const gy = Math.floor(y);
+    if (gx < 0 || gx >= GRID_WIDTH || gy < 0 || gy >= GRID_HEIGHT) return false;
+    const tileType = this.grid[gy][gx].type;
+    // Sidewalks are Road (which has sidewalk edges) and Tile
     return tileType === TileType.Road || tileType === TileType.Tile;
   }
 
-  private getValidDirections(tileX: number, tileY: number): Direction[] {
-    const valid: Direction[] = [];
+  // Get the walking cost for a tile (lower = preferred)
+  private getWalkCost(x: number, y: number): number {
+    const gx = Math.floor(x);
+    const gy = Math.floor(y);
+    if (gx < 0 || gx >= GRID_WIDTH || gy < 0 || gy >= GRID_HEIGHT) return Infinity;
+    const tileType = this.grid[gy][gx].type;
+    
+    // Sidewalks (Road edges, Tile) are preferred - cost 1
+    if (tileType === TileType.Road || tileType === TileType.Tile) return 1;
+    // Asphalt (street) is walkable but costly - cost 5 (cross only when needed)
+    if (tileType === TileType.Asphalt) return 5;
+    // Everything else is not walkable
+    return Infinity;
+  }
+
+  private getValidDirections(tileX: number, tileY: number, preferSidewalks: boolean = true): Direction[] {
+    const sidewalkDirs: Direction[] = [];
+    const asphaltDirs: Direction[] = [];
+    
     for (const dir of allDirections) {
       const vec = directionVectors[dir];
-      if (this.isWalkable(tileX + vec.dx, tileY + vec.dy)) {
-        valid.push(dir);
+      const nextX = tileX + vec.dx;
+      const nextY = tileY + vec.dy;
+      
+      if (this.isSidewalk(nextX, nextY)) {
+        sidewalkDirs.push(dir);
+      } else if (this.isWalkable(nextX, nextY)) {
+        asphaltDirs.push(dir);
       }
     }
-    return valid;
+    
+    // Return sidewalks first if preferred, then asphalt as fallback
+    if (preferSidewalks) {
+      return [...sidewalkDirs, ...asphaltDirs];
+    }
+    return [...sidewalkDirs, ...asphaltDirs];
   }
 
   private pickNewDirection(
@@ -503,26 +581,1039 @@ export class MainScene extends Phaser.Scene {
     tileY: number,
     currentDir: Direction
   ): Direction | null {
-    const validDirs = this.getValidDirections(tileX, tileY);
+    // Get valid directions (sidewalks first)
+    const validDirs = this.getValidDirections(tileX, tileY, true);
     if (validDirs.length === 0) return null;
 
     const opposite = oppositeDirection[currentDir];
     const preferredDirs = validDirs.filter((d) => d !== opposite);
 
-    // 60% chance to continue straight if possible
-    if (preferredDirs.includes(currentDir) && Math.random() < 0.6) {
+    // Separate sidewalk and asphalt options
+    const sidewalkChoices = preferredDirs.filter(d => {
+      const vec = directionVectors[d];
+      return this.isSidewalk(tileX + vec.dx, tileY + vec.dy);
+    });
+
+    // 60% chance to continue straight if possible AND it's a sidewalk
+    const currentIsSidewalk = this.isSidewalk(tileX + directionVectors[currentDir].dx, tileY + directionVectors[currentDir].dy);
+    if (preferredDirs.includes(currentDir) && currentIsSidewalk && Math.random() < 0.6) {
       return currentDir;
+    }
+
+    // Prefer sidewalk choices (90% of time), only use asphalt if no sidewalks or 10% chance
+    if (sidewalkChoices.length > 0 && Math.random() < 0.9) {
+      return sidewalkChoices[Math.floor(Math.random() * sidewalkChoices.length)];
     }
 
     const choices = preferredDirs.length > 0 ? preferredDirs : validDirs;
     return choices[Math.floor(Math.random() * choices.length)];
   }
 
-  private updateSingleCharacter(char: Character): Character {
+  // Find nearby buildings that citizens can interact with
+  private findNearbyBuildings(
+    charX: number,
+    charY: number,
+    maxDistance: number = 10
+  ): Array<{ buildingId: string; originX: number; originY: number; distance: number }> {
+    const buildings: Array<{ buildingId: string; originX: number; originY: number; distance: number }> = [];
+    const charTileX = Math.floor(charX);
+    const charTileY = Math.floor(charY);
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        const cell = this.grid[y][x];
+        if (cell.type === TileType.Building && cell.buildingId && cell.isOrigin) {
+          const distance = Math.abs(x - charTileX) + Math.abs(y - charTileY);
+          if (distance <= maxDistance && distance > 0) {
+            buildings.push({
+              buildingId: cell.buildingId,
+              originX: x,
+              originY: y,
+              distance,
+            });
+          }
+        }
+      }
+    }
+
+    return buildings.sort((a, b) => a.distance - b.distance);
+  }
+
+  // Get all walkable tiles adjacent to a building (within 1 tile of building perimeter)
+  // Returns SIDEWALK tiles first, then asphalt tiles (so citizens can reach them more easily)
+  private getBuildingAdjacentTiles(
+    buildingOriginX: number,
+    buildingOriginY: number,
+    buildingId: string
+  ): Array<{ x: number; y: number }> {
+    const building = getBuilding(buildingId);
+    if (!building) return [];
+
+    const footprint = getBuildingFootprint(building);
+    const sidewalkTiles: Array<{ x: number; y: number }> = [];
+    const asphaltTiles: Array<{ x: number; y: number }> = [];
+    const seen = new Set<string>();
+
+    // Check all tiles within 1 tile of the building perimeter
+    for (let dy = -1; dy <= footprint.height; dy++) {
+      for (let dx = -1; dx <= footprint.width; dx++) {
+        const checkX = buildingOriginX + dx;
+        const checkY = buildingOriginY + dy;
+        const key = `${checkX},${checkY}`;
+
+        // Skip if already seen
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        // Skip tiles inside the building footprint
+        if (dx >= 0 && dx < footprint.width && dy >= 0 && dy < footprint.height) continue;
+
+        // Check if walkable
+        if (
+          checkX >= 0 &&
+          checkX < GRID_WIDTH &&
+          checkY >= 0 &&
+          checkY < GRID_HEIGHT
+        ) {
+          if (this.isSidewalk(checkX, checkY)) {
+            sidewalkTiles.push({ x: checkX, y: checkY });
+          } else if (this.isWalkable(checkX, checkY)) {
+            asphaltTiles.push({ x: checkX, y: checkY });
+          }
+        }
+      }
+    }
+
+    // Return sidewalk tiles first, then asphalt as fallback
+    return [...sidewalkTiles, ...asphaltTiles];
+  }
+
+  // Get a walkable tile adjacent to a building that the citizen can reach
+  // Finds the closest reachable tile from citizen's current position
+  private getBuildingAccessTile(
+    buildingOriginX: number,
+    buildingOriginY: number,
+    buildingId: string,
+    fromX?: number,
+    fromY?: number
+  ): { x: number; y: number } | null {
+    const adjacentTiles = this.getBuildingAdjacentTiles(buildingOriginX, buildingOriginY, buildingId);
+    if (adjacentTiles.length === 0) return null;
+
+    // If no starting position provided, just return the first adjacent tile
+    if (fromX === undefined || fromY === undefined) {
+      return adjacentTiles[0];
+    }
+
+    // Sort by distance from citizen and prefer sidewalks over asphalt
+    adjacentTiles.sort((a, b) => {
+      const distA = Math.abs(a.x - fromX) + Math.abs(a.y - fromY);
+      const distB = Math.abs(b.x - fromX) + Math.abs(b.y - fromY);
+      const costA = this.isSidewalk(a.x, a.y) ? 0 : 1;
+      const costB = this.isSidewalk(b.x, b.y) ? 0 : 1;
+      // Prefer sidewalks, then by distance
+      if (costA !== costB) return costA - costB;
+      return distA - distB;
+    });
+
+    // Return first reachable tile (checking reachability is done by caller if needed)
+    return adjacentTiles[0];
+  }
+
+  // Check if a path exists to target (without returning the path)
+  private canReachTarget(
+    startX: number,
+    startY: number,
+    targetX: number,
+    targetY: number,
+    maxSteps: number = 150
+  ): boolean {
+    if (startX === targetX && startY === targetY) return true;
+
+    const queue: Array<{ x: number; y: number }> = [{ x: startX, y: startY }];
+    const visited = new Set<string>();
+    visited.add(`${startX},${startY}`);
+
+    let iterations = 0;
+    while (queue.length > 0 && iterations < maxSteps * 4) {
+      iterations++;
+      const current = queue.shift()!;
+
+      for (const dir of allDirections) {
+        const vec = directionVectors[dir];
+        const nextX = current.x + vec.dx;
+        const nextY = current.y + vec.dy;
+        const key = `${nextX},${nextY}`;
+
+        if (visited.has(key)) continue;
+        if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
+        if (!this.isWalkable(nextX, nextY)) continue;
+
+        visited.add(key);
+
+        if (nextX === targetX && nextY === targetY) {
+          return true;
+        }
+
+        queue.push({ x: nextX, y: nextY });
+      }
+    }
+
+    return false;
+  }
+
+  // Check if we can reach ANY of the given target tiles
+  private canReachAnyTarget(
+    startX: number,
+    startY: number,
+    targets: Array<{ x: number; y: number }>,
+    maxSteps: number = 150
+  ): { x: number; y: number } | null {
+    if (targets.length === 0) {
+      console.log(`[canReachAnyTarget] No targets provided`);
+      return null;
+    }
+
+    const targetSet = new Set(targets.map(t => `${t.x},${t.y}`));
+    
+    // Check if already at a target
+    if (targetSet.has(`${startX},${startY}`)) {
+      return { x: startX, y: startY };
+    }
+
+    // Check if start position is walkable
+    if (!this.isWalkable(startX, startY)) {
+      console.log(`[canReachAnyTarget] Start (${startX},${startY}) is NOT walkable!`);
+      return null;
+    }
+
+    const queue: Array<{ x: number; y: number }> = [{ x: startX, y: startY }];
+    const visited = new Set<string>();
+    visited.add(`${startX},${startY}`);
+
+    let iterations = 0;
+    while (queue.length > 0 && iterations < maxSteps * 4) {
+      iterations++;
+      const current = queue.shift()!;
+
+      for (const dir of allDirections) {
+        const vec = directionVectors[dir];
+        const nextX = current.x + vec.dx;
+        const nextY = current.y + vec.dy;
+        const key = `${nextX},${nextY}`;
+
+        if (visited.has(key)) continue;
+        if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
+        if (!this.isWalkable(nextX, nextY)) continue;
+
+        visited.add(key);
+
+        if (targetSet.has(key)) {
+          console.log(`[canReachAnyTarget] Found path from (${startX},${startY}) to (${nextX},${nextY}) in ${iterations} iterations`);
+          return { x: nextX, y: nextY };
+        }
+
+        queue.push({ x: nextX, y: nextY });
+      }
+    }
+
+    console.log(`[canReachAnyTarget] No path from (${startX},${startY}) to any of ${targets.length} targets after ${iterations} iterations`);
+    return null;
+  }
+
+  // BFS pathfinding - tries sidewalks first, then allows asphalt
+  private findPathToTarget(
+    startX: number,
+    startY: number,
+    targetX: number,
+    targetY: number,
+    maxSteps: number = 150
+  ): Direction | null {
+    if (startX === targetX && startY === targetY) return null;
+
+    // First try: sidewalks only (no asphalt crossing)
+    const sidewalkResult = this.findPathBFS(startX, startY, targetX, targetY, maxSteps, true);
+    if (sidewalkResult) return sidewalkResult;
+
+    // Second try: allow asphalt crossing
+    const anyPathResult = this.findPathBFS(startX, startY, targetX, targetY, maxSteps, false);
+    if (anyPathResult) return anyPathResult;
+
+    // No path found, fall back to greedy approach
+    return this.moveTowardsTargetGreedy(startX, startY, targetX, targetY);
+  }
+
+  // Simple BFS pathfinding
+  private findPathBFS(
+    startX: number,
+    startY: number,
+    targetX: number,
+    targetY: number,
+    maxSteps: number,
+    sidewalksOnly: boolean
+  ): Direction | null {
+    if (this.debugPathfinding && this.debugLogCounter % 60 === 0) {
+      // Debug: show adjacent tile walkability from start
+      const adjInfo = allDirections.map(d => {
+        const v = directionVectors[d];
+        const nx = startX + v.dx;
+        const ny = startY + v.dy;
+        const canWalk = sidewalksOnly ? this.isSidewalk(nx, ny) : this.isWalkable(nx, ny);
+        return `${d}(${nx},${ny})=${canWalk}`;
+      }).join(', ');
+      console.log(`[BFS] From (${startX},${startY}) to (${targetX},${targetY}), sidewalksOnly: ${sidewalksOnly}. Adjacent: ${adjInfo}`);
+    }
+    
+    const queue: Array<{ x: number; y: number; firstDir: Direction }> = [];
+    const visited = new Set<string>();
+    visited.add(`${startX},${startY}`);
+
+    // Add initial neighbors
+    for (const dir of allDirections) {
+      const vec = directionVectors[dir];
+      const nextX = startX + vec.dx;
+      const nextY = startY + vec.dy;
+
+      if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
+      
+      const canWalk = sidewalksOnly ? this.isSidewalk(nextX, nextY) : this.isWalkable(nextX, nextY);
+      if (!canWalk) continue;
+
+      const key = `${nextX},${nextY}`;
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      if (nextX === targetX && nextY === targetY) {
+        return dir;
+      }
+
+      queue.push({ x: nextX, y: nextY, firstDir: dir });
+    }
+
+    let iterations = 0;
+    while (queue.length > 0 && iterations < maxSteps * 4) {
+      iterations++;
+      const current = queue.shift()!;
+
+      for (const dir of allDirections) {
+        const vec = directionVectors[dir];
+        const nextX = current.x + vec.dx;
+        const nextY = current.y + vec.dy;
+        const key = `${nextX},${nextY}`;
+
+        if (visited.has(key)) continue;
+        if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
+        
+        const canWalk = sidewalksOnly ? this.isSidewalk(nextX, nextY) : this.isWalkable(nextX, nextY);
+        if (!canWalk) continue;
+
+        visited.add(key);
+
+        if (nextX === targetX && nextY === targetY) {
+          return current.firstDir;
+        }
+
+        queue.push({ x: nextX, y: nextY, firstDir: current.firstDir });
+      }
+    }
+
+    return null;
+  }
+
+  // Find path to any of the target tiles (for building access) - uses simple BFS
+  private findPathToAnyTarget(
+    startX: number,
+    startY: number,
+    targets: Array<{ x: number; y: number }>,
+    maxSteps: number = 150
+  ): { direction: Direction; target: { x: number; y: number } } | null {
+    if (targets.length === 0) return null;
+
+    const targetSet = new Set(targets.map(t => `${t.x},${t.y}`));
+    
+    // Check if already at a target
+    if (targetSet.has(`${startX},${startY}`)) {
+      return null; // Already there
+    }
+
+    // First try sidewalks only
+    const sidewalkResult = this.findPathToAnyTargetBFS(startX, startY, targetSet, maxSteps, true);
+    if (sidewalkResult) return sidewalkResult;
+
+    // Then allow asphalt
+    return this.findPathToAnyTargetBFS(startX, startY, targetSet, maxSteps, false);
+  }
+
+  private findPathToAnyTargetBFS(
+    startX: number,
+    startY: number,
+    targetSet: Set<string>,
+    maxSteps: number,
+    sidewalksOnly: boolean
+  ): { direction: Direction; target: { x: number; y: number } } | null {
+    const queue: Array<{ x: number; y: number; firstDir: Direction }> = [];
+    const visited = new Set<string>();
+    visited.add(`${startX},${startY}`);
+
+    // Add initial neighbors
+    for (const dir of allDirections) {
+      const vec = directionVectors[dir];
+      const nextX = startX + vec.dx;
+      const nextY = startY + vec.dy;
+      const key = `${nextX},${nextY}`;
+
+      if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
+      
+      const canWalk = sidewalksOnly ? this.isSidewalk(nextX, nextY) : this.isWalkable(nextX, nextY);
+      if (!canWalk) continue;
+
+      if (visited.has(key)) continue;
+      visited.add(key);
+
+      if (targetSet.has(key)) {
+        return { direction: dir, target: { x: nextX, y: nextY } };
+      }
+
+      queue.push({ x: nextX, y: nextY, firstDir: dir });
+    }
+
+    let iterations = 0;
+    while (queue.length > 0 && iterations < maxSteps * 4) {
+      iterations++;
+      const current = queue.shift()!;
+
+      for (const dir of allDirections) {
+        const vec = directionVectors[dir];
+        const nextX = current.x + vec.dx;
+        const nextY = current.y + vec.dy;
+        const key = `${nextX},${nextY}`;
+
+        if (visited.has(key)) continue;
+        if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
+        
+        const canWalk = sidewalksOnly ? this.isSidewalk(nextX, nextY) : this.isWalkable(nextX, nextY);
+        if (!canWalk) continue;
+
+        visited.add(key);
+
+        if (targetSet.has(key)) {
+          return { direction: current.firstDir, target: { x: nextX, y: nextY } };
+        }
+
+        queue.push({ x: nextX, y: nextY, firstDir: current.firstDir });
+      }
+    }
+
+    return null;
+  }
+
+  // Greedy fallback when pathfinding fails - prefers sidewalks
+  private moveTowardsTargetGreedy(
+    charTileX: number,
+    charTileY: number,
+    targetX: number,
+    targetY: number
+  ): Direction | null {
+    const dx = targetX - charTileX;
+    const dy = targetY - charTileY;
+
+    // If already at target, return null (no movement needed)
+    if (dx === 0 && dy === 0) return null;
+
+    // Get valid directions, already sorted with sidewalks first
+    const validDirs = this.getValidDirections(charTileX, charTileY, true);
+    if (validDirs.length === 0) return null;
+
+    // Try primary direction (toward target on the longer axis)
+    let primaryDir: Direction | null = null;
+    let secondaryDir: Direction | null = null;
+
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      primaryDir = dx > 0 ? Direction.Right : Direction.Left;
+      secondaryDir = dy > 0 ? Direction.Down : dy < 0 ? Direction.Up : null;
+    } else {
+      primaryDir = dy > 0 ? Direction.Down : Direction.Up;
+      secondaryDir = dx > 0 ? Direction.Right : dx < 0 ? Direction.Left : null;
+    }
+
+    // Check if primary/secondary directions are sidewalks (prefer sidewalks)
+    const primaryIsSidewalk = primaryDir && this.isSidewalk(charTileX + directionVectors[primaryDir].dx, charTileY + directionVectors[primaryDir].dy);
+    const secondaryIsSidewalk = secondaryDir && this.isSidewalk(charTileX + directionVectors[secondaryDir].dx, charTileY + directionVectors[secondaryDir].dy);
+
+    // Try primary direction first (if it's a sidewalk or only option)
+    if (primaryDir && validDirs.includes(primaryDir)) {
+      if (primaryIsSidewalk) {
+        return primaryDir;
+      }
+      // If primary is asphalt, check if secondary is a sidewalk and roughly same direction
+      if (secondaryDir && secondaryIsSidewalk && validDirs.includes(secondaryDir)) {
+        return secondaryDir;
+      }
+      // Fall back to primary even if asphalt
+      return primaryDir;
+    }
+
+    // Try secondary direction
+    if (secondaryDir && validDirs.includes(secondaryDir)) {
+      return secondaryDir;
+    }
+
+    // Try directions that get us closer, preferring sidewalks
+    const currentDistance = Math.abs(dx) + Math.abs(dy);
+
+    // First pass: only consider sidewalk directions that get closer
+    for (const dir of validDirs) {
+      const vec = directionVectors[dir];
+      const nextX = charTileX + vec.dx;
+      const nextY = charTileY + vec.dy;
+
+      if (!this.isSidewalk(nextX, nextY)) continue;
+
+      const newDistance = Math.abs(targetX - nextX) + Math.abs(targetY - nextY);
+      if (newDistance < currentDistance) {
+        return dir;
+      }
+    }
+    
+    // Second pass: consider asphalt directions that get closer (cross road if needed)
+    for (const dir of validDirs) {
+      const vec = directionVectors[dir];
+      const nextX = charTileX + vec.dx;
+      const nextY = charTileY + vec.dy;
+
+      const newDistance = Math.abs(targetX - nextX) + Math.abs(targetY - nextY);
+      if (newDistance < currentDistance) {
+        return dir;
+      }
+    }
+
+    // No direction gets closer - pick first valid (sidewalks are already first in validDirs)
+    if (validDirs.length > 0) {
+      return validDirs[0];
+    }
+
+    return null;
+  }
+
+  // Simple pathfinding: move towards target using BFS (returns just the direction)
+  private moveTowardsTarget(
+    char: CharacterWithResidence,
+    targetX: number,
+    targetY: number
+  ): Direction | null {
+    const charTileX = Math.floor(char.x);
+    const charTileY = Math.floor(char.y);
+
+    // Use BFS pathfinding to find first step toward target
+    return this.findPathToTarget(charTileX, charTileY, targetX, targetY);
+  }
+
+  // Check if character is at a building and can interact
+  // Returns the updated character with new residence/cooldown if interaction occurred
+  private checkBuildingInteraction(char: CharacterWithResidence): CharacterWithResidence {
+    const charTileX = Math.floor(char.x);
+    const charTileY = Math.floor(char.y);
+
+    // Check interaction cooldown first - if on cooldown, skip all checks
+    if (char.interactionCooldown && char.interactionCooldown > 0) {
+      return char;
+    }
+
+    // Check for nearby buildings within a larger radius (Manhattan distance <= 3)
+    // This allows interaction from across the street
+    const MAX_INTERACTION_DISTANCE = 3;
+    
+    // Track which buildings we've already checked (by origin key) to avoid duplicates
+    const checkedBuildings = new Set<string>();
+    
+    for (let dy = -MAX_INTERACTION_DISTANCE; dy <= MAX_INTERACTION_DISTANCE; dy++) {
+      for (let dx = -MAX_INTERACTION_DISTANCE; dx <= MAX_INTERACTION_DISTANCE; dx++) {
+        // Only consider tiles within Manhattan distance
+        if (Math.abs(dx) + Math.abs(dy) > MAX_INTERACTION_DISTANCE) continue;
+
+        const checkX = charTileX + dx;
+        const checkY = charTileY + dy;
+
+        if (
+          checkX < 0 ||
+          checkX >= GRID_WIDTH ||
+          checkY < 0 ||
+          checkY >= GRID_HEIGHT
+        ) {
+          continue;
+        }
+
+        const cell = this.grid[checkY][checkX];
+        if (cell.type !== TileType.Building) continue;
+        
+        // Get building ID and origin - try cell first, then origin cell
+        let buildingId = cell.buildingId;
+        let originX = cell.originX;
+        let originY = cell.originY;
+        
+        // If this cell doesn't have buildingId but has origin coordinates, get from origin
+        if (!buildingId && originX !== undefined && originY !== undefined) {
+          const originCell = this.grid[originY]?.[originX];
+          if (originCell) {
+            buildingId = originCell.buildingId;
+          }
+        }
+        
+        // Also try to get buildingId from the origin if we have one
+        if (!buildingId && originX !== undefined && originY !== undefined) {
+          const originCell = this.grid[originY]?.[originX];
+          buildingId = originCell?.buildingId;
+        }
+        
+        if (!buildingId) continue;
+        
+        // Use origin coordinates, falling back to check coordinates
+        if (originX === undefined) originX = checkX;
+        if (originY === undefined) originY = checkY;
+        
+        const buildingKey = `${originX},${originY}`;
+        
+        // Skip if we've already checked this building
+        if (checkedBuildings.has(buildingKey)) continue;
+        checkedBuildings.add(buildingKey);
+        
+        const building = getBuilding(buildingId);
+        if (!building) continue;
+
+        const economics = getBuildingEconomics(building);
+
+        // Check if citizen is arriving at their home (heading_home state)
+        if (
+          building.category === "residential" &&
+          char.state === "heading_home" &&
+          char.residenceX === originX &&
+          char.residenceY === originY
+        ) {
+          // Arrived home! If broke, rest until next day
+          if (char.brokeUntilNextDay) {
+            return {
+              ...char,
+              state: "resting_at_home",
+              currentDestination: undefined,
+              interactionCooldown: 0,
+            };
+          } else {
+            // Just visiting home, go back to wandering
+            return {
+              ...char,
+              state: "wandering",
+              currentDestination: undefined,
+              interactionCooldown: 1000,
+            };
+          }
+        }
+
+        // Residential building: try to move in if no residence
+        if (
+          building.category === "residential" &&
+          char.residenceX === undefined &&
+          economics.maxResidents
+        ) {
+          const currentResidents = this.buildingOccupancy.get(buildingKey) || [];
+          if (currentResidents.length < economics.maxResidents) {
+            // Move in!
+            currentResidents.push(char.id);
+            this.buildingOccupancy.set(buildingKey, currentResidents);
+            this.events_.onBuildingInteraction?.(
+              buildingId,
+              originX,
+              originY,
+              "move_in",
+              char.id
+            );
+            return {
+              ...char,
+              residenceX: originX,
+              residenceY: originY,
+              interactionCooldown: 3000, // 3 second cooldown after moving in
+              state: "wandering", // Reset state after moving in
+              currentDestination: undefined,
+              lastFailedBuildingKey: undefined, // Clear failed building tracker
+            };
+          } else {
+            // Building is full! Clear destination and set cooldown so they try somewhere else
+            // Only if this was their target building
+            if (char.currentDestination?.buildingOriginX === originX &&
+                char.currentDestination?.buildingOriginY === originY) {
+              return {
+                ...char,
+                interactionCooldown: 3000, // Wait before trying another building
+                state: "wandering",
+                currentDestination: undefined,
+                lastFailedBuildingKey: buildingKey, // Remember this building was full
+              };
+            }
+          }
+        }
+
+        // Business/Civic/Landmark: generate income
+        if (economics.incomePerInteraction && building.category !== "residential") {
+          // Check if citizen can afford to visit this business
+          const cost = economics.incomePerInteraction;
+          const citizenMoney = char.money ?? 0;
+          
+          if (citizenMoney >= cost) {
+            // Deduct money from citizen and notify React
+            this.events_.onCitizenSpend?.(char.id, cost);
+            this.events_.onBuildingInteraction?.(
+              buildingId,
+              originX,
+              originY,
+              "income",
+              char.id
+            );
+            // Set cooldown to prevent spam (5 seconds at normal speed = 5000ms)
+            return {
+              ...char,
+              money: citizenMoney - cost,
+              interactionCooldown: 5000,
+            };
+          }
+          // Can't afford - mark as broke and clear destination so they go home or wander
+          return {
+            ...char,
+            interactionCooldown: 3000,
+            brokeUntilNextDay: true,
+            state: "wandering",
+            currentDestination: undefined,
+          };
+        }
+      }
+    }
+
+    return char;
+  }
+
+  // Debug flag - set to true to enable console logging
+  private debugPathfinding = false; // Disabled - set to true for debugging
+  private debugLogCounter = 0;
+
+  private debugLog(charId: string, ...args: unknown[]): void {
+    if (!this.debugPathfinding) return;
+    // Only log every 60 frames to avoid spam
+    if (this.debugLogCounter % 60 === 0) {
+      console.log(`[Citizen ${charId.slice(0, 4)}]`, ...args);
+    }
+  }
+
+  private updateSingleCharacter(char: CharacterWithResidence): CharacterWithResidence {
+    this.debugLogCounter++;
+
+    // Citizens resting at home don't move - they're waiting for the next day
+    if (char.state === "resting_at_home") {
+      return char; // No updates needed, they're "inside" their home
+    }
+
     const { x, y, direction, speed } = char;
+    // Apply game speed multiplier
+    const effectiveSpeed = speed * (this.gameSpeed === GameSpeed.Paused ? 0 : this.gameSpeed);
     const vec = directionVectors[direction];
     const tileX = Math.floor(x);
     const tileY = Math.floor(y);
+
+    // Update interaction cooldown
+    let newInteractionCooldown = char.interactionCooldown;
+    if (newInteractionCooldown !== undefined && newInteractionCooldown > 0) {
+      newInteractionCooldown = Math.max(0, newInteractionCooldown - (16 * this.gameSpeed)); // ~60fps, adjust by game speed
+    }
+
+    // Check for building interactions (updates char if interaction occurred)
+    let updatedChar: CharacterWithResidence = {
+      ...char,
+      interactionCooldown: newInteractionCooldown,
+    };
+    updatedChar = this.checkBuildingInteraction(updatedChar);
+
+    // Use updated char from interaction check
+    char = updatedChar;
+    newInteractionCooldown = char.interactionCooldown;
+
+    // Track current position for stuck detection (declare early for use in early returns)
+    const currentPos = { x: tileX, y: tileY };
+
+    // Determine citizen state and destination
+    let state = char.state || "wandering";
+    let currentDestination = char.currentDestination;
+
+    // Check if destination building still exists (might have been deleted)
+    if (currentDestination && currentDestination.buildingOriginX !== undefined && currentDestination.buildingOriginY !== undefined) {
+      const destCell = this.grid[currentDestination.buildingOriginY]?.[currentDestination.buildingOriginX];
+      if (!destCell || destCell.type !== TileType.Building || !destCell.buildingId) {
+        // Building was deleted! Clear destination and go back to wandering
+        currentDestination = undefined;
+        state = "wandering";
+      }
+    }
+    
+    // Also check if the destination tile itself is still walkable
+    if (currentDestination && !this.isWalkable(currentDestination.x, currentDestination.y)) {
+      // Destination tile is no longer walkable (building expanded over it, etc.)
+      currentDestination = undefined;
+      state = "wandering";
+    }
+
+    // If citizen has no residence and is wandering, look for a home they can AFFORD
+    if (state === "wandering" && !char.residenceX) {
+      const citizenMoney = char.money ?? 0;
+      const nearbyBuildings = this.findNearbyBuildings(x, y, 15);
+      
+      // Only consider residential buildings the citizen can afford
+      let residentialBuildings = nearbyBuildings.filter((b) => {
+        const building = getBuilding(b.buildingId);
+        if (!building || building.category !== "residential") return false;
+        
+        // Check if citizen can afford the rent
+        const economics = getBuildingEconomics(building);
+        const rent = economics.rentPerResident ?? 0;
+        return citizenMoney >= rent;
+      });
+
+      // Shuffle the list so we don't always try the same building first
+      residentialBuildings = [...residentialBuildings].sort(() => Math.random() - 0.5);
+
+      if (residentialBuildings.length > 0 && Math.random() < 0.02) {
+        // 2% chance per frame to look for a home
+        // Try each residential building until we find one we can reach via SIDEWALKS
+        for (const target of residentialBuildings) {
+          const buildingKey = `${target.originX},${target.originY}`;
+
+          // Skip buildings that were recently full
+          if (char.lastFailedBuildingKey === buildingKey) {
+            continue;
+          }
+
+          const adjacentTiles = this.getBuildingAdjacentTiles(
+            target.originX,
+            target.originY,
+            target.buildingId
+          );
+          
+          // Only consider buildings that have sidewalk-accessible tiles
+          const sidewalkTiles = adjacentTiles.filter(t => this.isSidewalk(t.x, t.y));
+          if (sidewalkTiles.length === 0) {
+            // No sidewalk access to this building, skip it
+            continue;
+          }
+          
+          // Try to reach a sidewalk tile first
+          const reachable = this.canReachAnyTarget(tileX, tileY, sidewalkTiles);
+          if (reachable) {
+            state = "heading_to_building";
+            currentDestination = {
+              x: reachable.x,
+              y: reachable.y,
+              buildingId: target.buildingId,
+              buildingOriginX: target.originX,
+              buildingOriginY: target.originY,
+            };
+            break;
+          }
+        }
+      }
+    }
+
+    // If citizen is broke, either go home to rest or just wander
+    const citizenMoney = char.money ?? 0;
+    const isBroke = char.brokeUntilNextDay || citizenMoney <= 0;
+    
+    if (isBroke && state === "wandering" && !currentDestination) {
+      // If they have a home, go rest there
+      if (char.residenceX !== undefined && char.residenceY !== undefined) {
+        // Find a path to home
+        const homeKey = `${char.residenceX},${char.residenceY}`;
+        const homeCell = this.grid[char.residenceY]?.[char.residenceX];
+        if (homeCell?.buildingId) {
+          const adjacentTiles = this.getBuildingAdjacentTiles(
+            char.residenceX,
+            char.residenceY,
+            homeCell.buildingId
+          );
+          const reachable = this.canReachAnyTarget(tileX, tileY, adjacentTiles);
+          if (reachable && Math.random() < 0.05) { // 5% chance per frame to head home
+            state = "heading_home";
+            currentDestination = {
+              x: reachable.x,
+              y: reachable.y,
+              buildingId: homeCell.buildingId,
+              buildingOriginX: char.residenceX,
+              buildingOriginY: char.residenceY,
+            };
+          }
+        }
+      }
+      // If no home or can't reach it, just wander (don't try to visit businesses)
+    }
+    // If citizen has money and is wandering, occasionally visit a business they can AFFORD
+    else if (state === "wandering" && !currentDestination && !isBroke && Math.random() < 0.01) {
+      // 1% chance per frame to visit a business
+      const nearbyBuildings = this.findNearbyBuildings(x, y, 12);
+      const businessBuildings = nearbyBuildings.filter((b) => {
+        const building = getBuilding(b.buildingId);
+        if (!building) return false;
+        const economics = getBuildingEconomics(building);
+        // Only consider businesses they can afford
+        const cost = economics.incomePerInteraction ?? 0;
+        return (
+          (building.category === "commercial" ||
+            building.category === "civic" ||
+            building.category === "landmark") &&
+          economics.incomePerInteraction !== undefined &&
+          citizenMoney >= cost
+        );
+      });
+
+      if (businessBuildings.length > 0) {
+        // Shuffle and try each business until we find one we can reach via SIDEWALKS
+        const shuffled = [...businessBuildings].sort(() => Math.random() - 0.5);
+        for (const target of shuffled) {
+          const adjacentTiles = this.getBuildingAdjacentTiles(
+            target.originX,
+            target.originY,
+            target.buildingId
+          );
+          
+          // Only consider buildings that have sidewalk-accessible tiles
+          const sidewalkTiles = adjacentTiles.filter(t => this.isSidewalk(t.x, t.y));
+          if (sidewalkTiles.length === 0) {
+            // No sidewalk access to this building, skip it
+            continue;
+          }
+          
+          // Try to reach a sidewalk tile first
+          const reachable = this.canReachAnyTarget(tileX, tileY, sidewalkTiles);
+          if (reachable) {
+            state = "heading_to_building";
+            currentDestination = {
+              x: reachable.x,
+              y: reachable.y,
+              buildingId: target.buildingId,
+              buildingOriginX: target.originX,
+              buildingOriginY: target.originY,
+            };
+            break;
+          }
+        }
+      }
+    }
+
+    // If heading to a building, check if we've arrived (close enough to interact)
+    if (state === "heading_to_building" && currentDestination) {
+      const buildingOriginX = currentDestination.buildingOriginX;
+      const buildingOriginY = currentDestination.buildingOriginY;
+
+      // Check if we're within interaction distance of the building (same as checkBuildingInteraction)
+      const INTERACTION_DISTANCE = 3;
+      let canInteractWithBuilding = false;
+      
+      if (buildingOriginX !== undefined && buildingOriginY !== undefined) {
+        // Get the building footprint to check all building tiles
+        const building = currentDestination.buildingId ? getBuilding(currentDestination.buildingId) : null;
+        if (building) {
+          const footprint = getBuildingFootprint(building);
+          // Check if we're within interaction distance of ANY part of the building
+          for (let dy = 0; dy < footprint.height && !canInteractWithBuilding; dy++) {
+            for (let dx = 0; dx < footprint.width && !canInteractWithBuilding; dx++) {
+              const buildingTileX = buildingOriginX + dx;
+              const buildingTileY = buildingOriginY + dy;
+              const distToTile = Math.abs(tileX - buildingTileX) + Math.abs(tileY - buildingTileY);
+              if (distToTile <= INTERACTION_DISTANCE) {
+                canInteractWithBuilding = true;
+              }
+            }
+          }
+        } else {
+          // Fallback: just check distance to origin
+          const buildingDistance = Math.abs(tileX - buildingOriginX) + Math.abs(tileY - buildingOriginY);
+          canInteractWithBuilding = buildingDistance <= INTERACTION_DISTANCE;
+        }
+      }
+
+      // If we're close enough to interact, we've "arrived"
+      if (canInteractWithBuilding) {
+        state = "at_building";
+        newInteractionCooldown = 500 + Math.random() * 1000; // Short cooldown before interaction triggers
+        currentDestination = undefined; // Clear destination - we're here!
+      }
+    }
+
+    // If at building, check if we should leave
+    if (state === "at_building") {
+      // Check if we're actually adjacent to a building (can interact)
+      let canInteract = false;
+      const directions = [
+        { dx: -1, dy: 0 },
+        { dx: 1, dy: 0 },
+        { dx: 0, dy: -1 },
+        { dx: 0, dy: 1 },
+      ];
+      for (const dir of directions) {
+        const checkX = tileX + dir.dx;
+        const checkY = tileY + dir.dy;
+        if (
+          checkX >= 0 &&
+          checkX < GRID_WIDTH &&
+          checkY >= 0 &&
+          checkY < GRID_HEIGHT
+        ) {
+          const cell = this.grid[checkY][checkX];
+          if (cell.type === TileType.Building && cell.buildingId && cell.isOrigin) {
+            canInteract = true;
+            break;
+          }
+        }
+      }
+
+      // If we can't interact and have a destination, try to get closer
+      if (!canInteract && currentDestination) {
+        // Try to pathfind to the destination again
+        state = "heading_to_building";
+      } else if (!newInteractionCooldown || newInteractionCooldown === 0) {
+        // We've finished interacting, decide what to do next
+        if (char.residenceX !== undefined && char.residenceY !== undefined) {
+          // Find the building ID at residence location
+          const residenceCell = this.grid[char.residenceY]?.[char.residenceX];
+          if (residenceCell && residenceCell.buildingId) {
+            const adjacentTiles = this.getBuildingAdjacentTiles(
+              char.residenceX,
+              char.residenceY,
+              residenceCell.buildingId
+            );
+            const reachable = this.canReachAnyTarget(tileX, tileY, adjacentTiles);
+            if (reachable) {
+              state = "heading_home";
+              currentDestination = {
+                x: reachable.x,
+                y: reachable.y,
+              };
+            } else {
+              state = "wandering";
+              currentDestination = undefined;
+            }
+          } else {
+            state = "wandering";
+            currentDestination = undefined;
+          }
+        } else {
+          state = "wandering";
+          currentDestination = undefined;
+        }
+      }
+    }
+
+    // If heading home, check if we've arrived
+    if (state === "heading_home" && currentDestination && char.residenceX) {
+      const distance =
+        Math.abs(tileX - currentDestination.x) + Math.abs(tileY - currentDestination.y);
+      if (distance <= 1) {
+        state = "wandering";
+        currentDestination = undefined;
+      }
+    }
 
     // Check if current tile is still walkable
     if (!this.isWalkable(tileX, tileY)) {
@@ -530,7 +1621,11 @@ export class MainScene extends Phaser.Scene {
       for (let gy = 0; gy < GRID_HEIGHT; gy++) {
         for (let gx = 0; gx < GRID_WIDTH; gx++) {
           const tileType = this.grid[gy][gx].type;
-          if (tileType === TileType.Road || tileType === TileType.Tile) {
+          if (
+            tileType === TileType.Road ||
+            tileType === TileType.Tile ||
+            tileType === TileType.Asphalt
+          ) {
             walkableTiles.push({ x: gx, y: gy });
           }
         }
@@ -544,23 +1639,133 @@ export class MainScene extends Phaser.Scene {
           y: newTile.y + 0.5,
           direction:
             allDirections[Math.floor(Math.random() * allDirections.length)],
+          state: "wandering",
+          currentDestination: undefined,
+          interactionCooldown: newInteractionCooldown,
+          stuckCounter: 0,
+          lastPosition: { x: newTile.x, y: newTile.y },
         };
       }
-      return char;
+      return {
+        ...char,
+        interactionCooldown: newInteractionCooldown,
+        stuckCounter: 0,
+        lastPosition: currentPos,
+      };
     }
 
     const inTileX = x - tileX;
     const inTileY = y - tileY;
-    const threshold = speed * 3;
+    // Use a fixed threshold for nearCenter check (not dependent on speed)
+    const threshold = 0.15; // Within 15% of center
     const nearCenter =
       Math.abs(inTileX - 0.5) < threshold &&
       Math.abs(inTileY - 0.5) < threshold;
+
+    // Detect if stuck (same tile for too long)
+    let stuckCounter = char.stuckCounter || 0;
+    const lastPos = char.lastPosition;
+    
+    // Only count as stuck if on the same tile
+    if (lastPos && lastPos.x === tileX && lastPos.y === tileY) {
+      stuckCounter += 1;
+      
+      // Only log when REALLY stuck (3+ seconds), not just normal tile traversal
+      if (stuckCounter === 180) {
+        console.log(`[Citizen ${char.id.slice(0,4)}] Stuck for 3s at (${tileX}, ${tileY}), state: ${state}, dest: ${currentDestination ? `(${currentDestination.x},${currentDestination.y})` : 'none'}`);
+      }
+      
+      // Only after being stuck for a VERY long time (5+ seconds), give up on destination
+      if (stuckCounter > 300) {
+        console.log(`[Citizen ${char.id.slice(0,4)}] Giving up on destination after 5s stuck`);
+        state = "wandering";
+        currentDestination = undefined;
+        stuckCounter = 0;
+      }
+    } else {
+      // Moved to a new tile, reset counter
+      stuckCounter = 0;
+    }
 
     let newDirection = direction;
     let nextX = x;
     let nextY = y;
 
-    if (nearCenter) {
+    // If we have a destination, try to pathfind towards it
+    if (currentDestination && (state === "heading_to_building" || state === "heading_home")) {
+      this.debugLog(char.id, `Has destination: (${currentDestination.x}, ${currentDestination.y}), state: ${state}, nearCenter: ${nearCenter}, pos: (${tileX}, ${tileY})`);
+      
+      // Check if current direction would lead into a wall
+      const currentDirVec = directionVectors[direction];
+      const aheadTileX = tileX + currentDirVec.dx;
+      const aheadTileY = tileY + currentDirVec.dy;
+      const isCurrentDirBlocked = !this.isWalkable(aheadTileX, aheadTileY);
+      
+      // Only do FULL pathfinding when near center of tile
+      // If just blocked (not near center), pick a locally valid direction without full recalc
+      if (nearCenter) {
+        // Full pathfinding at tile centers
+        const targetDir = this.moveTowardsTarget(char, currentDestination.x, currentDestination.y);
+        this.debugLog(char.id, `Pathfinding returned: ${targetDir}`);
+        
+        if (targetDir) {
+          // Check if the direction is actually walkable
+          const targetVec = directionVectors[targetDir];
+          const nextTileX = tileX + targetVec.dx;
+          const nextTileY = tileY + targetVec.dy;
+          const isNextWalkable = this.isWalkable(nextTileX, nextTileY);
+          this.debugLog(char.id, `Target dir ${targetDir} -> (${nextTileX}, ${nextTileY}), walkable: ${isNextWalkable}`);
+          
+          if (isNextWalkable) {
+            newDirection = targetDir;
+          } else {
+            // Direction not walkable, try greedy fallback
+            const greedyDir = this.moveTowardsTargetGreedy(tileX, tileY, currentDestination.x, currentDestination.y);
+            if (greedyDir && this.isWalkable(tileX + directionVectors[greedyDir].dx, tileY + directionVectors[greedyDir].dy)) {
+              newDirection = greedyDir;
+            } else {
+              // Can't move toward target, pick any valid direction to keep moving
+              const validDirs = this.getValidDirections(tileX, tileY);
+              if (validDirs.length > 0) {
+                newDirection = validDirs[0];
+              }
+            }
+          }
+        } else {
+          // Pathfinding returned null - try greedy or pick any valid direction
+          const greedyDir = this.moveTowardsTargetGreedy(tileX, tileY, currentDestination.x, currentDestination.y);
+          if (greedyDir && this.isWalkable(tileX + directionVectors[greedyDir].dx, tileY + directionVectors[greedyDir].dy)) {
+            newDirection = greedyDir;
+          } else {
+            const validDirs = this.getValidDirections(tileX, tileY);
+            if (validDirs.length > 0) {
+              newDirection = validDirs[0];
+            }
+          }
+        }
+      } else if (isCurrentDirBlocked) {
+        // Not near center but direction is blocked - just pick a valid direction
+        // WITHOUT full pathfinding (to avoid oscillation)
+        // Use greedy to try to get closer to target
+        const greedyDir = this.moveTowardsTargetGreedy(tileX, tileY, currentDestination.x, currentDestination.y);
+        if (greedyDir && this.isWalkable(tileX + directionVectors[greedyDir].dx, tileY + directionVectors[greedyDir].dy)) {
+          newDirection = greedyDir;
+        } else {
+          // Greedy doesn't work, pick any valid direction except the opposite of current
+          // (to maintain momentum and avoid going back immediately)
+          const validDirs = this.getValidDirections(tileX, tileY);
+          const opposite = oppositeDirection[direction];
+          const preferredDirs = validDirs.filter(d => d !== opposite);
+          if (preferredDirs.length > 0) {
+            newDirection = preferredDirs[0];
+          } else if (validDirs.length > 0) {
+            newDirection = validDirs[0];
+          }
+        }
+      }
+      // If not blocked and not near center, keep moving in current direction
+    } else if (nearCenter) {
+      // Normal wandering behavior - only change direction at tile centers
       const nextTileX = tileX + vec.dx;
       const nextTileY = tileY + vec.dy;
 
@@ -568,39 +1773,92 @@ export class MainScene extends Phaser.Scene {
         const newDir = this.pickNewDirection(tileX, tileY, direction);
         if (newDir) {
           newDirection = newDir;
+          // DON'T snap to center - just change direction
         }
-        nextX = tileX + 0.5;
-        nextY = tileY + 0.5;
+        // If no valid direction, keep current direction (will be blocked at end)
       } else {
         const validDirs = this.getValidDirections(tileX, tileY);
         if (validDirs.length > 2 && Math.random() < 0.1) {
           const newDir = this.pickNewDirection(tileX, tileY, direction);
           if (newDir) {
             newDirection = newDir;
-            nextX = tileX + 0.5;
-            nextY = tileY + 0.5;
+            // DON'T snap to center - just change direction
+          }
+        }
+      }
+    }
+
+    // Emergency check: if we have no valid directions, we're trapped
+    const validDirs = this.getValidDirections(tileX, tileY);
+    if (validDirs.length === 0) {
+      // Find any walkable tile and teleport there
+      for (let gy = 0; gy < GRID_HEIGHT; gy++) {
+        for (let gx = 0; gx < GRID_WIDTH; gx++) {
+          if (this.isWalkable(gx, gy)) {
+            return {
+              ...char,
+              x: gx + 0.5,
+              y: gy + 0.5,
+              direction: allDirections[Math.floor(Math.random() * allDirections.length)],
+              state: "wandering",
+              currentDestination: undefined,
+              interactionCooldown: newInteractionCooldown,
+              stuckCounter: 0,
+              lastPosition: { x: gx, y: gy },
+            };
           }
         }
       }
     }
 
     const moveVec = directionVectors[newDirection];
-    nextX += moveVec.dx * speed;
-    nextY += moveVec.dy * speed;
+    nextX += moveVec.dx * effectiveSpeed;
+    nextY += moveVec.dy * effectiveSpeed;
 
     const finalTileX = Math.floor(nextX);
     const finalTileY = Math.floor(nextY);
 
     if (!this.isWalkable(finalTileX, finalTileY)) {
+      if (this.debugLogCounter % 60 === 0) {
+        console.log(`[Citizen ${char.id.slice(0,4)}] BLOCKED - final tile (${finalTileX},${finalTileY}) not walkable, staying at (${tileX},${tileY})`);
+      }
       return {
         ...char,
         x: tileX + 0.5,
         y: tileY + 0.5,
         direction: newDirection,
+        state,
+        currentDestination,
+        interactionCooldown: newInteractionCooldown,
+        stuckCounter,
+        lastPosition: { x: tileX, y: tileY },
       };
     }
 
-    return { ...char, x: nextX, y: nextY, direction: newDirection };
+    // Reset stuck counter if we actually moved to a different tile
+    const finalStuckCounter = (finalTileX !== tileX || finalTileY !== tileY) ? 0 : stuckCounter;
+
+    // Only log movement when debug is enabled
+    if (this.debugPathfinding && this.debugLogCounter % 60 === 0 && currentDestination) {
+      console.log(`[Citizen ${char.id.slice(0,4)}] Moving: (${tileX},${tileY})->(${finalTileX},${finalTileY}), dir: ${newDirection}, dest: (${currentDestination.x},${currentDestination.y})`);
+    }
+
+    // Clear lastFailedBuildingKey after some time (when cooldown expires and they've moved)
+    const clearFailedBuilding = !char.lastFailedBuildingKey || 
+      (newInteractionCooldown === 0 && finalStuckCounter === 0);
+    
+    return {
+      ...char,
+      x: nextX,
+      y: nextY,
+      direction: newDirection,
+      state,
+      currentDestination,
+      interactionCooldown: newInteractionCooldown,
+      stuckCounter: finalStuckCounter,
+      lastPosition: { x: finalTileX, y: finalTileY },
+      lastFailedBuildingKey: clearFailedBuilding ? undefined : char.lastFailedBuildingKey,
+    };
   }
 
   // ============================================
@@ -761,6 +2019,8 @@ export class MainScene extends Phaser.Scene {
 
   private updateSingleCar(car: Car): Car {
     const { x, y, direction, speed, waiting } = car;
+    // Apply game speed multiplier
+    const effectiveSpeed = speed * (this.gameSpeed === GameSpeed.Paused ? 0 : this.gameSpeed);
     const vec = directionVectors[direction];
     const tileX = Math.floor(x);
     const tileY = Math.floor(y);
@@ -826,7 +2086,7 @@ export class MainScene extends Phaser.Scene {
 
     const inTileX = x - tileX;
     const inTileY = y - tileY;
-    const threshold = speed * 2;
+    const threshold = effectiveSpeed * 2;
     const nearCenter =
       Math.abs(inTileX - 0.5) < threshold &&
       Math.abs(inTileY - 0.5) < threshold;
@@ -880,9 +2140,9 @@ export class MainScene extends Phaser.Scene {
     }
 
     const moveVec = directionVectors[newDirection];
-    const pixelatedStep = Math.max(0.001, speed);
-    nextX += moveVec.dx * speed;
-    nextY += moveVec.dy * speed;
+    const pixelatedStep = Math.max(0.001, effectiveSpeed);
+    nextX += moveVec.dx * effectiveSpeed;
+    nextY += moveVec.dy * effectiveSpeed;
 
     nextX = Math.round(nextX / pixelatedStep) * pixelatedStep;
     nextY = Math.round(nextY / pixelatedStep) * pixelatedStep;
@@ -1141,6 +2401,46 @@ export class MainScene extends Phaser.Scene {
     if (!this.isReady) return;
 
     if (pointer.leftButtonDown()) {
+      // Check if clicking on a citizen when no tool is selected - show citizen info
+      if (this.selectedTool === ToolType.None) {
+        const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+        const gridPos = this.screenToGrid(worldPoint.x, worldPoint.y);
+        
+        // Check if any citizen is close to the click position
+        for (const char of this.characters) {
+          const charScreenPos = this.gridToScreen(char.x, char.y);
+          const clickScreenPos = worldPoint;
+          const distance = Math.sqrt(
+            Math.pow(charScreenPos.x - clickScreenPos.x, 2) +
+            Math.pow(charScreenPos.y - clickScreenPos.y, 2)
+          );
+          // Click within ~30 pixels of character
+          if (distance < 30) {
+            if (this.events_.onCitizenClick) {
+              this.events_.onCitizenClick(char.id);
+              return; // Don't start panning
+            }
+          }
+        }
+      }
+
+      // Check if clicking on a building when no tool is selected - show building info
+      if (this.selectedTool === ToolType.None && this.hoverTile) {
+        const cell = this.grid[this.hoverTile.y]?.[this.hoverTile.x];
+        if (cell && cell.type === TileType.Building) {
+          // Get building origin
+          const originX = cell.originX !== undefined ? cell.originX : this.hoverTile.x;
+          const originY = cell.originY !== undefined ? cell.originY : this.hoverTile.y;
+          const originCell = this.grid[originY]?.[originX];
+          const buildingId = originCell?.buildingId || cell.buildingId;
+          
+          if (buildingId && this.events_.onBuildingClick) {
+            this.events_.onBuildingClick(buildingId, originX, originY);
+            return; // Don't start panning
+          }
+        }
+      }
+
       // Check if we should start panning (no tool selected OR clicking empty space with no active tool)
       const shouldPan =
         this.selectedTool === ToolType.None ||
@@ -1378,6 +2678,22 @@ export class MainScene extends Phaser.Scene {
         (cell.type !== TileType.Building || !cell.isOrigin)
       ) {
         buildingsToRemove.add(oldBuildingKey);
+        // Clean up building occupancy when building is removed
+        const buildingKey = `${x},${y}`;
+        const residents = this.buildingOccupancy.get(buildingKey);
+        if (residents) {
+          // Remove residence from all citizens who lived here
+          for (const residentId of residents) {
+            const citizen = this.characters.find((c) => c.id === residentId);
+            if (citizen && citizen.residenceX === x && citizen.residenceY === y) {
+              citizen.residenceX = undefined;
+              citizen.residenceY = undefined;
+              citizen.state = "wandering";
+              citizen.currentDestination = undefined;
+            }
+          }
+          this.buildingOccupancy.delete(buildingKey);
+        }
       }
     }
 
@@ -1483,7 +2799,10 @@ export class MainScene extends Phaser.Scene {
     const randomCharacterType =
       characterTypes[Math.floor(Math.random() * characterTypes.length)];
 
-    const newCharacter: Character = {
+    // Generate random daily budget
+    const dailyBudget = MIN_DAILY_BUDGET + Math.floor(Math.random() * (MAX_DAILY_BUDGET - MIN_DAILY_BUDGET));
+
+    const newCharacter: CharacterWithResidence = {
       id: generateId(),
       x: roadTile.x + 0.5,
       y: roadTile.y + 0.5,
@@ -1491,6 +2810,13 @@ export class MainScene extends Phaser.Scene {
         allDirections[Math.floor(Math.random() * allDirections.length)],
       speed: CHARACTER_SPEED,
       characterType: randomCharacterType,
+      state: "wandering",
+      stuckCounter: 0,
+      lastPosition: { x: roadTile.x, y: roadTile.y },
+      name: generateRandomName(),
+      money: dailyBudget, // Start with their daily budget
+      dailyBudget,
+      rentPaid: false,
     };
 
     this.characters.push(newCharacter);
@@ -1600,6 +2926,8 @@ export class MainScene extends Phaser.Scene {
   }
 
   clearCharacters(): void {
+    // Clear building occupancy when clearing all characters
+    this.buildingOccupancy.clear();
     this.characters = [];
     this.characterSprites.forEach((sprite) => sprite.destroy());
     this.characterSprites.clear();
@@ -1614,6 +2942,115 @@ export class MainScene extends Phaser.Scene {
       this.playerCar = null;
       this.isPlayerDriving = false;
     }
+  }
+
+  // Get citizen data by ID
+  getCitizenData(citizenId: string): CharacterWithResidence | null {
+    return this.characters.find((c) => c.id === citizenId) || null;
+  }
+
+  // Get all citizens data
+  getAllCitizens(): CharacterWithResidence[] {
+    return [...this.characters];
+  }
+
+  // Update citizen name
+  updateCitizenName(citizenId: string, newName: string): void {
+    const citizen = this.characters.find((c) => c.id === citizenId);
+    if (citizen) {
+      citizen.name = newName;
+    }
+  }
+
+  // Update citizen money
+  updateCitizenMoney(citizenId: string, amount: number): void {
+    const citizen = this.characters.find((c) => c.id === citizenId);
+    if (citizen) {
+      citizen.money = amount;
+    }
+  }
+
+  // Reset daily money for all citizens and wake up those resting at home
+  resetDailyMoney(): void {
+    for (const citizen of this.characters) {
+      citizen.money = citizen.dailyBudget ?? MIN_DAILY_BUDGET;
+      citizen.brokeUntilNextDay = false;
+      
+      // Wake up citizens who were resting at home
+      if (citizen.state === "resting_at_home") {
+        citizen.state = "wandering";
+        // Position them at their home entrance
+        if (citizen.residenceX !== undefined && citizen.residenceY !== undefined) {
+          // Find a walkable tile near their home
+          const adjacentTiles = this.getBuildingAdjacentTiles(
+            citizen.residenceX,
+            citizen.residenceY,
+            this.grid[citizen.residenceY]?.[citizen.residenceX]?.buildingId || ""
+          );
+          if (adjacentTiles.length > 0) {
+            const spawnTile = adjacentTiles[Math.floor(Math.random() * adjacentTiles.length)];
+            citizen.x = spawnTile.x + 0.5;
+            citizen.y = spawnTile.y + 0.5;
+          }
+        }
+      }
+    }
+  }
+
+  // Reset rent paid status for all citizens (called at start of month)
+  resetRentStatus(): void {
+    for (const citizen of this.characters) {
+      citizen.rentPaid = false;
+    }
+  }
+
+  // Process rent payment for a citizen
+  // Returns: { paid: boolean, amount: number } or null if citizen not found
+  processRentPayment(citizenId: string, rentAmount: number): { paid: boolean; amount: number } | null {
+    const citizen = this.characters.find((c) => c.id === citizenId);
+    if (!citizen) return null;
+
+    const currentMoney = citizen.money ?? 0;
+    if (currentMoney >= rentAmount) {
+      citizen.money = currentMoney - rentAmount;
+      citizen.rentPaid = true;
+      return { paid: true, amount: rentAmount };
+    }
+    return { paid: false, amount: 0 };
+  }
+
+  // Evict a citizen from their residence
+  evictCitizen(citizenId: string): boolean {
+    const citizen = this.characters.find((c) => c.id === citizenId);
+    if (!citizen || citizen.residenceX === undefined) return false;
+
+    const buildingKey = `${citizen.residenceX},${citizen.residenceY}`;
+    const residents = this.buildingOccupancy.get(buildingKey);
+    if (residents) {
+      const index = residents.indexOf(citizenId);
+      if (index !== -1) {
+        residents.splice(index, 1);
+        this.buildingOccupancy.set(buildingKey, residents);
+      }
+    }
+
+    citizen.residenceX = undefined;
+    citizen.residenceY = undefined;
+    citizen.rentPaid = false;
+    citizen.state = "wandering";
+    citizen.currentDestination = undefined;
+
+    return true;
+  }
+
+  // Get residence building ID for a citizen
+  getCitizenResidenceBuildingId(citizenId: string): string | undefined {
+    const citizen = this.characters.find((c) => c.id === citizenId);
+    if (!citizen || citizen.residenceX === undefined || citizen.residenceY === undefined) {
+      return undefined;
+    }
+    const cell = this.grid[citizen.residenceY]?.[citizen.residenceX];
+    return cell?.buildingId;
   }
 
   setSelectedTool(tool: ToolType): void {
@@ -1705,6 +3142,16 @@ export class MainScene extends Phaser.Scene {
 
   setShowStats(show: boolean): void {
     this.showStats = show;
+  }
+
+  setGameSpeed(speed: GameSpeed): void {
+    this.gameSpeed = speed;
+  }
+
+  getBuildingResidentCount(originX: number, originY: number): number {
+    const buildingKey = `${originX},${originY}`;
+    const residents = this.buildingOccupancy.get(buildingKey);
+    return residents ? residents.length : 0;
   }
 
   // ============================================
@@ -2264,6 +3711,12 @@ export class MainScene extends Phaser.Scene {
         this.characterSprites.set(char.id, sprite);
       } else {
         sprite.setPosition(screenPos.x, centerY);
+      }
+
+      // Hide citizens who are resting at home
+      if (char.state === "resting_at_home") {
+        sprite.setVisible(false);
+        continue;
       }
 
       if (this.gifsLoaded && this.textures.exists(textureKey)) {
