@@ -13,13 +13,13 @@ const MUSIC_PLAYLISTS: Record<MusicGenre, string[]> = {
     "chill_3.mp3",
   ],
   jazz: [
-    "pogicity_music_001.mp3",
-    "pogicity_music_002.mp3",
-    "pogicity_music_003.mp3",
-    "pogicity_music_004.mp3",
-    "pogicity_music_005.mp3",
-    "pogicity_music_006.mp3",
-    "pogicity_music_007.mp3",
+    "hugh-city_music_001.mp3",
+    "hugh-city_music_002.mp3",
+    "hugh-city_music_003.mp3",
+    "hugh-city_music_004.mp3",
+    "hugh-city_music_005.mp3",
+    "hugh-city_music_006.mp3",
+    "hugh-city_music_007.mp3",
   ],
 };
 

@@ -15,7 +15,7 @@ const pixelifySans = Pixelify_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Pogicity",
+  title: "Hugh-City",
   description: "A retro city builder game",
   viewport: {
     width: "device-width",

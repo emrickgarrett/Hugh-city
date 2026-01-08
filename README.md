@@ -1,4 +1,4 @@
-# Pogicity
+# Hugh-City
 
 An isometric city builder engine built with Phaser 3 and Next.js. Place buildings, lay roads, and watch citizens and cars roam your city.
 

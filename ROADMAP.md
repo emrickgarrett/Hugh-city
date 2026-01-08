@@ -1,6 +1,6 @@
-# Pogicity Roadmap
+# Hugh-City Roadmap
 
-A rough plan for evolving Pogicity into a full city simulation game, inspired by SimCity 3000/4.
+A rough plan for evolving Hugh-City into a full city simulation game, inspired by SimCity 3000/4.
 
 ---
 
@@ -1360,7 +1360,7 @@ Agents (garbage trucks, fire trucks) must physically reach destinations.
 Traffic jam → trucks can't arrive → garbage piles up → city collapses.
 One system failure cascades into total breakdown.
 
-**The SC4/Pogicity approach:**
+**The SC4/Hugh-City approach:**
 Simulation uses abstract coverage %, not agent pathfinding.
 Agents are eye candy that visualize outcomes, not determine them.
 
@@ -1657,7 +1657,7 @@ function buildAgentContext(agent: Agent, city: CityState): string {
   const landmarks = city.landmarks.map(l => l.name);
 
   return `
-You are ${identity.name}, a ${identity.personality} ${identity.occupation} in Pogicity.
+You are ${identity.name}, a ${identity.personality} ${identity.occupation} in Hugh-City.
 You're currently at (${agent.x}, ${agent.y}) near: ${nearbyBuildings.join(', ')}.
 
 The city has these landmarks: ${landmarks.join(', ')}.
