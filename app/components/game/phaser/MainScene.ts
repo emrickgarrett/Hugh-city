@@ -821,25 +821,81 @@ export class MainScene extends Phaser.Scene {
     return null;
   }
 
-  // BFS pathfinding - tries sidewalks first, then allows asphalt
+  // Weighted pathfinding - prefers sidewalks but allows asphalt crossing
+  // Uses A*-like approach with costs: sidewalk=1, asphalt=5
   private findPathToTarget(
     startX: number,
     startY: number,
     targetX: number,
     targetY: number,
-    maxSteps: number = 150
+    maxSteps: number = 200
   ): Direction | null {
     if (startX === targetX && startY === targetY) return null;
 
-    // First try: sidewalks only (no asphalt crossing)
-    const sidewalkResult = this.findPathBFS(startX, startY, targetX, targetY, maxSteps, true);
-    if (sidewalkResult) return sidewalkResult;
+    // Use weighted pathfinding that prefers sidewalks but allows asphalt
+    return this.findPathWeighted(startX, startY, targetX, targetY, maxSteps);
+  }
 
-    // Second try: allow asphalt crossing
-    const anyPathResult = this.findPathBFS(startX, startY, targetX, targetY, maxSteps, false);
-    if (anyPathResult) return anyPathResult;
-
-    // No path found, fall back to greedy approach
+  // Weighted pathfinding: sidewalks cost 1, asphalt costs 5 (prefers sidewalks but allows crossing)
+  private findPathWeighted(
+    startX: number,
+    startY: number,
+    targetX: number,
+    targetY: number,
+    maxSteps: number
+  ): Direction | null {
+    // Priority queue: [priority, x, y, firstDir, cost]
+    const queue: Array<[number, number, number, Direction | null, number]> = [];
+    const visited = new Set<string>();
+    const firstDirMap = new Map<string, Direction>(); // Track first direction to reach each tile
+    
+    // Heuristic: Manhattan distance
+    const heuristic = (x: number, y: number) => Math.abs(x - targetX) + Math.abs(y - targetY);
+    
+    // Start position
+    const startKey = `${startX},${startY}`;
+    visited.add(startKey);
+    queue.push([heuristic(startX, startY), startX, startY, null, 0]);
+    
+    while (queue.length > 0 && visited.size < maxSteps) {
+      // Sort by priority (simple priority queue)
+      queue.sort((a, b) => a[0] - b[0]);
+      const [priority, currentX, currentY, currentFirstDir, currentCost] = queue.shift()!;
+      const currentKey = `${currentX},${currentY}`;
+      
+      // Check if we reached the target
+      if (currentX === targetX && currentY === targetY) {
+        // Return the first direction we took to get here
+        return currentFirstDir || this.moveTowardsTargetGreedy(startX, startY, targetX, targetY);
+      }
+      
+      // Explore neighbors
+      for (const dir of allDirections) {
+        const vec = directionVectors[dir];
+        const nextX = currentX + vec.dx;
+        const nextY = currentY + vec.dy;
+        const nextKey = `${nextX},${nextY}`;
+        
+        if (visited.has(nextKey)) continue;
+        if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
+        if (!this.isWalkable(nextX, nextY)) continue;
+        
+        // Calculate cost: sidewalks = 1, asphalt = 5
+        const isSidewalk = this.isSidewalk(nextX, nextY);
+        const stepCost = isSidewalk ? 1 : 5;
+        const newCost = currentCost + stepCost;
+        const newPriority = newCost + heuristic(nextX, nextY);
+        
+        // Determine first direction: if we're at start, this is the first dir; otherwise use stored first dir
+        const firstDirection = currentX === startX && currentY === startY ? dir : (currentFirstDir || dir);
+        
+        visited.add(nextKey);
+        firstDirMap.set(nextKey, firstDirection);
+        queue.push([newPriority, nextX, nextY, firstDirection, newCost]);
+      }
+    }
+    
+    // No path found - fall back to greedy
     return this.moveTowardsTargetGreedy(startX, startY, targetX, targetY);
   }
 
@@ -1662,25 +1718,49 @@ export class MainScene extends Phaser.Scene {
       Math.abs(inTileX - 0.5) < threshold &&
       Math.abs(inTileY - 0.5) < threshold;
 
-    // Detect if stuck (same tile for too long)
+    // Detect if stuck (same tile for too long) OR oscillating between tiles
     let stuckCounter = char.stuckCounter || 0;
+    let oscillationCounter = (char as any).oscillationCounter || 0;
     const lastPos = char.lastPosition;
-    
+    const secondLastPos = (char as any).secondLastPosition;
+
+    // Check for oscillation: moving between same two tiles repeatedly
+    if (lastPos && secondLastPos) {
+      const isOscillating = 
+        (lastPos.x === secondLastPos.x && lastPos.y === secondLastPos.y) ||
+        (tileX === secondLastPos.x && tileY === secondLastPos.y && lastPos.x === tileX && lastPos.y === tileY);
+      
+      if (isOscillating) {
+        oscillationCounter += 1;
+        // If oscillating for 2+ seconds (120 frames), give up
+        if (oscillationCounter > 120) {
+          console.log(`[Citizen ${char.id.slice(0,4)}] Oscillating between tiles, giving up on destination`);
+          state = "wandering";
+          currentDestination = undefined;
+          stuckCounter = 0;
+          oscillationCounter = 0;
+        }
+      } else {
+        oscillationCounter = 0;
+      }
+    }
+
     // Only count as stuck if on the same tile
     if (lastPos && lastPos.x === tileX && lastPos.y === tileY) {
       stuckCounter += 1;
-      
+
       // Only log when REALLY stuck (3+ seconds), not just normal tile traversal
       if (stuckCounter === 180) {
         console.log(`[Citizen ${char.id.slice(0,4)}] Stuck for 3s at (${tileX}, ${tileY}), state: ${state}, dest: ${currentDestination ? `(${currentDestination.x},${currentDestination.y})` : 'none'}`);
       }
-      
+
       // Only after being stuck for a VERY long time (5+ seconds), give up on destination
       if (stuckCounter > 300) {
         console.log(`[Citizen ${char.id.slice(0,4)}] Giving up on destination after 5s stuck`);
         state = "wandering";
         currentDestination = undefined;
         stuckCounter = 0;
+        oscillationCounter = 0;
       }
     } else {
       // Moved to a new tile, reset counter
@@ -1858,7 +1938,10 @@ export class MainScene extends Phaser.Scene {
       stuckCounter: finalStuckCounter,
       lastPosition: { x: finalTileX, y: finalTileY },
       lastFailedBuildingKey: clearFailedBuilding ? undefined : char.lastFailedBuildingKey,
-    };
+      // Track oscillation for stuck detection
+      oscillationCounter: oscillationCounter,
+      secondLastPosition: lastPos ? { x: lastPos.x, y: lastPos.y } : undefined,
+    } as CharacterWithResidence & { oscillationCounter?: number; secondLastPosition?: { x: number; y: number } };
   }
 
   // ============================================
