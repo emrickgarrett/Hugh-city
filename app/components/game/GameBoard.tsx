@@ -318,6 +318,16 @@ export default function GameBoard() {
   // Process monthly loan payments, operating costs, and rent collection
   const processMonthlyPayments = useCallback(() => {
     if (!phaserGameRef.current) return;
+    
+    // Mark homeless citizens to start leaving at end of month
+    const citizensLeaving = phaserGameRef.current.removeHomelessCitizens();
+    if (citizensLeaving > 0) {
+      setModalState({
+        isVisible: true,
+        title: "Citizens Leaving",
+        message: `${citizensLeaving} homeless citizen${citizensLeaving > 1 ? 's' : ''} ${citizensLeaving > 1 ? 'are' : 'is'} leaving the city after being unable to find housing.`,
+      });
+    }
 
     // First, process citizen rent payments and evictions
     const citizens = phaserGameRef.current.getAllCitizens();
@@ -757,6 +767,10 @@ export default function GameBoard() {
         rentPaid: citizen.rentPaid ?? false,
         state: citizen.state,
         destinationBuildingName,
+        moodlet: citizen.moodlet,
+        moodletReason: citizen.moodletReason,
+        ateToday: citizen.ateToday,
+        entertainedToday: citizen.entertainedToday,
       };
 
       // Update character names map
@@ -821,6 +835,10 @@ export default function GameBoard() {
         rentPaid: citizen.rentPaid ?? false,
         state: citizen.state,
         destinationBuildingName,
+        moodlet: citizen.moodlet,
+        moodletReason: citizen.moodletReason,
+        ateToday: citizen.ateToday,
+        entertainedToday: citizen.entertainedToday,
       };
 
       setSelectedCitizenData({ ...updatedData, monthlyRent } as CitizenData & { monthlyRent: number });
@@ -890,6 +908,8 @@ export default function GameBoard() {
         characterType: citizen.characterType,
         hasResidence: citizen.residenceX !== undefined,
         residenceBuildingName: residenceBuilding?.name,
+        moodlet: citizen.moodlet,
+        moodletReason: citizen.moodletReason,
       };
     });
   }, []);

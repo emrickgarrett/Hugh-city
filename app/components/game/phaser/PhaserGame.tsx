@@ -39,6 +39,7 @@ export interface PhaserGameHandle {
   processRentPayment: (citizenId: string, rentAmount: number) => { paid: boolean; amount: number } | null;
   evictCitizen: (citizenId: string) => boolean;
   getCitizenResidenceBuildingId: (citizenId: string) => string | undefined;
+  removeHomelessCitizens: () => number; // Returns number of citizens removed
 }
 
 interface PhaserGameProps {
@@ -216,6 +217,12 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
             return sceneRef.current.getCitizenResidenceBuildingId(citizenId);
           }
           return undefined;
+        },
+        removeHomelessCitizens: () => {
+          if (sceneRef.current) {
+            return sceneRef.current.removeHomelessCitizens();
+          }
+          return 0;
         },
       }),
       []

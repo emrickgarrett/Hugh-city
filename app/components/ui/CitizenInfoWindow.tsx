@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { getBuilding } from "@/app/data/buildings";
-import { CharacterType } from "@/app/components/game/types";
+import { CharacterType, MoodletType, Moodlet } from "@/app/components/game/types";
 
 export interface CitizenData {
   id: string;
@@ -14,8 +14,12 @@ export interface CitizenData {
   residenceY?: number;
   residenceBuildingId?: string;
   rentPaid: boolean;
-  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home";
+  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home" | "leaving_city";
   destinationBuildingName?: string;
+  moodlet?: MoodletType;
+  moodletReason?: string;
+  ateToday?: boolean;
+  entertainedToday?: boolean;
 }
 
 interface CitizenInfoWindowProps {
@@ -46,6 +50,51 @@ const getCitizenSpritePath = (characterType: CharacterType): string => {
   return `/Characters/bananawalksouth.gif`;
 };
 
+// Get moodlet display info (RollerCoaster Tycoon style)
+const getMoodletDisplay = (moodlet?: MoodletType, reason?: string): Moodlet | null => {
+  if (!moodlet) return null;
+  
+  switch (moodlet) {
+    case "happy":
+      return {
+        type: "happy",
+        emoji: "😊",
+        reason: reason || "I'm feeling great!",
+        color: "#00ff00", // Bright green
+      };
+    case "sad":
+      return {
+        type: "sad",
+        emoji: "😢",
+        reason: reason || "I'm feeling down",
+        color: "#808080", // Gray
+      };
+    case "hungry":
+      return {
+        type: "hungry",
+        emoji: "🍔",
+        reason: reason || "I need to eat!",
+        color: "#ffa500", // Orange
+      };
+    case "angry":
+      return {
+        type: "angry",
+        emoji: "😠",
+        reason: reason || "I'm frustrated",
+        color: "#ff0000", // Red
+      };
+    case "depressed":
+      return {
+        type: "depressed",
+        emoji: "😔",
+        reason: reason || "I'm feeling hopeless",
+        color: "#4b0082", // Indigo
+      };
+    default:
+      return null;
+  }
+};
+
 // Get friendly description of citizen's current activity
 const getActivityDescription = (
   state?: string,
@@ -58,6 +107,12 @@ const getActivityDescription = (
         emoji: "😴",
         text: "Resting at home (out of money)",
         color: "#94a3b8",
+      };
+    case "leaving_city":
+      return {
+        emoji: "🚶",
+        text: "Leaving the city...",
+        color: "#ff6b6b",
       };
     case "heading_home":
       return {
@@ -450,6 +505,95 @@ export default function CitizenInfoWindow({
             );
           })()}
         </div>
+
+        {/* Moodlet Display (RollerCoaster Tycoon Style) */}
+        {(() => {
+          const moodletDisplay = getMoodletDisplay(citizen.moodlet, citizen.moodletReason);
+          if (!moodletDisplay) return null;
+          
+          return (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: 10,
+                backgroundColor: "#f0f0f0",
+                border: "2px solid",
+                borderColor: moodletDisplay.color,
+                borderRadius: 4,
+                boxShadow: `0 0 8px ${moodletDisplay.color}40`,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  marginBottom: 6,
+                }}
+              >
+                <span style={{ fontSize: 28, lineHeight: 1 }}>
+                  {moodletDisplay.emoji}
+                </span>
+                <div style={{ flex: 1 }}>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      fontWeight: "bold",
+                      color: moodletDisplay.color,
+                      textShadow: "1px 1px 2px rgba(0,0,0,0.3)",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.5px",
+                    }}
+                  >
+                    {moodletDisplay.type}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "#333",
+                      marginTop: 2,
+                      fontStyle: "italic",
+                    }}
+                  >
+                    {moodletDisplay.reason}
+                  </div>
+                </div>
+              </div>
+              
+              {/* Needs status */}
+              <div
+                style={{
+                  marginTop: 8,
+                  paddingTop: 8,
+                  borderTop: "1px solid #ccc",
+                  fontSize: 10,
+                  display: "flex",
+                  gap: 12,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span>{citizen.ateToday ? "✅" : "❌"}</span>
+                  <span style={{ color: citizen.ateToday ? "#008000" : "#cc0000" }}>
+                    {citizen.ateToday ? "Fed" : "Hungry"}
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span>{citizen.entertainedToday ? "✅" : "❌"}</span>
+                  <span style={{ color: citizen.entertainedToday ? "#008000" : "#cc0000" }}>
+                    {citizen.entertainedToday ? "Entertained" : "Bored"}
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span>{citizen.residenceX !== undefined ? "✅" : "❌"}</span>
+                  <span style={{ color: citizen.residenceX !== undefined ? "#008000" : "#cc0000" }}>
+                    {citizen.residenceX !== undefined ? "Housed" : "Homeless"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Residence */}
         <div

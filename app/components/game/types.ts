@@ -129,13 +129,23 @@ export interface BuildingEconomics {
   maxResidents?: number; // For residential buildings
 }
 
+// Moodlet types
+export type MoodletType = "happy" | "sad" | "hungry" | "angry" | "depressed" | null;
+
+export interface Moodlet {
+  type: MoodletType;
+  emoji: string;
+  reason: string;
+  color: string;
+}
+
 // Extended Character with residence and destination
 export interface CharacterWithResidence extends Character {
   residenceX?: number; // Grid X of residence origin
   residenceY?: number; // Grid Y of residence origin
   currentDestination?: { x: number; y: number; buildingId?: string; buildingOriginX?: number; buildingOriginY?: number }; // Where they're heading
   interactionCooldown?: number; // Time until they can interact with a building again
-  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home";
+  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home" | "leaving_city";
   stuckCounter?: number; // Counter to detect if stuck in place
   lastPosition?: { x: number; y: number }; // Last tile position to detect if stuck
   name?: string; // Citizen's name (editable by player)
@@ -144,6 +154,17 @@ export interface CharacterWithResidence extends Character {
   rentPaid?: boolean; // Whether they've paid rent this month
   lastFailedBuildingKey?: string; // Building key that was recently full (to avoid re-selecting)
   brokeUntilNextDay?: boolean; // True if citizen has run out of money and is waiting for next day
+  // Needs tracking
+  lastFoodTime?: number; // In-game hour when they last ate (0-23)
+  ateToday?: boolean; // Whether they've eaten today
+  entertainedToday?: boolean; // Whether they've visited entertainment today
+  // Moodlet tracking
+  moodlet?: MoodletType; // Current moodlet
+  moodletReason?: string; // Reason for current moodlet
+  previousMoodlet?: MoodletType; // Previous moodlet (for particle effects)
+  // Homeless/depression tracking
+  willLeaveAtMonthEnd?: boolean; // Will leave city at end of month if still homeless
+  homelessSince?: number; // Month when they became homeless (for tracking)
 }
 
 export const GRID_WIDTH = 48;

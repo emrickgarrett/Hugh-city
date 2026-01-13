@@ -16,6 +16,7 @@ import {
   CAR_SPEED,
   GameSpeed,
   CharacterWithResidence,
+  MoodletType,
 } from "../types";
 import { GRID_OFFSET_X, GRID_OFFSET_Y } from "./gameConfig";
 import {
@@ -76,8 +77,8 @@ const generateRandomName = (): string => {
 };
 
 // Daily budget range for citizens
-const MIN_DAILY_BUDGET = 50;
-const MAX_DAILY_BUDGET = 150;
+const MIN_DAILY_BUDGET = 120;
+const MAX_DAILY_BUDGET = 220;
 
 // Generate unique ID
 const generateId = () => Math.random().toString(36).substring(2, 9);
@@ -514,17 +515,25 @@ export class MainScene extends Phaser.Scene {
   // ============================================
 
   private updateCharacters(): void {
+    // First, remove citizens who have reached the map edge and left
+    this.removeCitizensWhoLeft();
+    
+    // Then update all remaining characters
     for (let i = 0; i < this.characters.length; i++) {
       this.characters[i] = this.updateSingleCharacter(this.characters[i]);
     }
   }
 
-  private isWalkable(x: number, y: number): boolean {
+  private isWalkable(x: number, y: number, allowGrass: boolean = false): boolean {
     const gx = Math.floor(x);
     const gy = Math.floor(y);
     if (gx < 0 || gx >= GRID_WIDTH || gy < 0 || gy >= GRID_HEIGHT) return false;
     const tileType = this.grid[gy][gx].type;
     // Citizens can walk on sidewalks (Road/Tile) and also on roads (Asphalt) to cross
+    // When leaving city, they can also walk on grass
+    if (allowGrass && tileType === TileType.Grass) {
+      return true;
+    }
     return tileType === TileType.Road || tileType === TileType.Tile || tileType === TileType.Asphalt;
   }
 
@@ -553,9 +562,10 @@ export class MainScene extends Phaser.Scene {
     return Infinity;
   }
 
-  private getValidDirections(tileX: number, tileY: number, preferSidewalks: boolean = true): Direction[] {
+  private getValidDirections(tileX: number, tileY: number, preferSidewalks: boolean = true, allowGrass: boolean = false): Direction[] {
     const sidewalkDirs: Direction[] = [];
     const asphaltDirs: Direction[] = [];
+    const grassDirs: Direction[] = [];
     
     for (const dir of allDirections) {
       const vec = directionVectors[dir];
@@ -564,16 +574,20 @@ export class MainScene extends Phaser.Scene {
       
       if (this.isSidewalk(nextX, nextY)) {
         sidewalkDirs.push(dir);
-      } else if (this.isWalkable(nextX, nextY)) {
-        asphaltDirs.push(dir);
+      } else if (this.isWalkable(nextX, nextY, allowGrass)) {
+        if (allowGrass && this.grid[nextY]?.[nextX]?.type === TileType.Grass) {
+          grassDirs.push(dir);
+        } else {
+          asphaltDirs.push(dir);
+        }
       }
     }
     
-    // Return sidewalks first if preferred, then asphalt as fallback
+    // Return sidewalks first if preferred, then asphalt, then grass as last resort
     if (preferSidewalks) {
-      return [...sidewalkDirs, ...asphaltDirs];
+      return [...sidewalkDirs, ...asphaltDirs, ...grassDirs];
     }
-    return [...sidewalkDirs, ...asphaltDirs];
+    return [...sidewalkDirs, ...asphaltDirs, ...grassDirs];
   }
 
   private pickNewDirection(
@@ -607,6 +621,39 @@ export class MainScene extends Phaser.Scene {
 
     const choices = preferredDirs.length > 0 ? preferredDirs : validDirs;
     return choices[Math.floor(Math.random() * choices.length)];
+  }
+
+  // Calculate how much money a citizen should reserve for other needs
+  // This helps them budget to afford both food and entertainment
+  private calculateReservedMoney(
+    char: CharacterWithResidence,
+    forType: "food" | "entertainment"
+  ): number {
+    const citizenMoney = char.money ?? 0;
+    const framesSinceFood = ((char as any).framesSinceLastFood || 0);
+    const needsFood = !char.ateToday || framesSinceFood >= 1200;
+    const needsEntertainment = !char.entertainedToday;
+    
+    let reserved = 0;
+    
+    // Estimate average costs: food ~30, entertainment ~35
+    const avgFoodCost = 30;
+    const avgEntertainmentCost = 35;
+    
+    // Reserve money for needs they still have
+    if (forType === "food") {
+      // If buying food, reserve for entertainment if needed
+      if (needsEntertainment) {
+        reserved = avgEntertainmentCost;
+      }
+    } else if (forType === "entertainment") {
+      // If buying entertainment, reserve for food if needed
+      if (needsFood) {
+        reserved = avgFoodCost;
+      }
+    }
+    
+    return reserved;
   }
 
   // Find nearby buildings that citizens can interact with
@@ -822,27 +869,29 @@ export class MainScene extends Phaser.Scene {
   }
 
   // Weighted pathfinding - prefers sidewalks but allows asphalt crossing
-  // Uses A*-like approach with costs: sidewalk=1, asphalt=5
+  // Uses A*-like approach with costs: sidewalk=1, asphalt=5, grass=10 (when allowed)
   private findPathToTarget(
     startX: number,
     startY: number,
     targetX: number,
     targetY: number,
-    maxSteps: number = 200
+    maxSteps: number = 200,
+    allowGrass: boolean = false
   ): Direction | null {
     if (startX === targetX && startY === targetY) return null;
 
-    // Use weighted pathfinding that prefers sidewalks but allows asphalt
-    return this.findPathWeighted(startX, startY, targetX, targetY, maxSteps);
+    // Use weighted pathfinding that prefers sidewalks but allows asphalt (and grass if leaving)
+    return this.findPathWeighted(startX, startY, targetX, targetY, maxSteps, allowGrass);
   }
 
-  // Weighted pathfinding: sidewalks cost 1, asphalt costs 5 (prefers sidewalks but allows crossing)
+  // Weighted pathfinding: sidewalks cost 1, asphalt costs 5, grass costs 10 (prefers sidewalks but allows crossing)
   private findPathWeighted(
     startX: number,
     startY: number,
     targetX: number,
     targetY: number,
-    maxSteps: number
+    maxSteps: number,
+    allowGrass: boolean = false
   ): Direction | null {
     // Priority queue: [priority, x, y, firstDir, cost]
     const queue: Array<[number, number, number, Direction | null, number]> = [];
@@ -878,11 +927,12 @@ export class MainScene extends Phaser.Scene {
         
         if (visited.has(nextKey)) continue;
         if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
-        if (!this.isWalkable(nextX, nextY)) continue;
+        if (!this.isWalkable(nextX, nextY, allowGrass)) continue;
         
-        // Calculate cost: sidewalks = 1, asphalt = 5
+        // Calculate cost: sidewalks = 1, asphalt = 5, grass = 10 (when allowed)
         const isSidewalk = this.isSidewalk(nextX, nextY);
-        const stepCost = isSidewalk ? 1 : 5;
+        const isGrass = allowGrass && this.grid[nextY]?.[nextX]?.type === TileType.Grass;
+        const stepCost = isSidewalk ? 1 : (isGrass ? 10 : 5);
         const newCost = currentCost + stepCost;
         const newPriority = newCost + heuristic(nextX, nextY);
         
@@ -895,7 +945,10 @@ export class MainScene extends Phaser.Scene {
       }
     }
     
-    // No path found - fall back to greedy
+    // No path found - fall back to greedy (with grass if allowed)
+    if (allowGrass) {
+      return this.moveTowardsTargetGreedyWithGrass(startX, startY, targetX, targetY);
+    }
     return this.moveTowardsTargetGreedy(startX, startY, targetX, targetY);
   }
 
@@ -1155,13 +1208,59 @@ export class MainScene extends Phaser.Scene {
   private moveTowardsTarget(
     char: CharacterWithResidence,
     targetX: number,
-    targetY: number
+    targetY: number,
+    allowGrass: boolean = false
   ): Direction | null {
     const charTileX = Math.floor(char.x);
     const charTileY = Math.floor(char.y);
 
-    // Use BFS pathfinding to find first step toward target
-    return this.findPathToTarget(charTileX, charTileY, targetX, targetY);
+    // Use weighted pathfinding to find first step toward target
+    return this.findPathToTarget(charTileX, charTileY, targetX, targetY, 200, allowGrass);
+  }
+  
+  // Greedy fallback that allows grass (for leaving citizens)
+  private moveTowardsTargetGreedyWithGrass(
+    charTileX: number,
+    charTileY: number,
+    targetX: number,
+    targetY: number
+  ): Direction | null {
+    const dx = targetX - charTileX;
+    const dy = targetY - charTileY;
+
+    if (dx === 0 && dy === 0) return null;
+
+    // Get valid directions (sidewalks first), but allow grass
+    const validDirs = this.getValidDirections(charTileX, charTileY, true, true);
+    if (validDirs.length === 0) return null;
+
+    // Try primary/secondary directions (same as regular greedy)
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      const primaryDir = dx > 0 ? Direction.Right : Direction.Left;
+      const secondaryDir = dy > 0 ? Direction.Down : dy < 0 ? Direction.Up : null;
+      if (validDirs.includes(primaryDir)) return primaryDir;
+      if (secondaryDir && validDirs.includes(secondaryDir)) return secondaryDir;
+    } else {
+      const primaryDir = dy > 0 ? Direction.Down : Direction.Up;
+      const secondaryDir = dx > 0 ? Direction.Right : dx < 0 ? Direction.Left : null;
+      if (validDirs.includes(primaryDir)) return primaryDir;
+      if (secondaryDir && validDirs.includes(secondaryDir)) return secondaryDir;
+    }
+
+    // Try directions that get closer
+    const currentDistance = Math.abs(dx) + Math.abs(dy);
+    for (const dir of validDirs) {
+      const vec = directionVectors[dir];
+      const nextX = charTileX + vec.dx;
+      const nextY = charTileY + vec.dy;
+      const newDistance = Math.abs(targetX - nextX) + Math.abs(targetY - nextY);
+      if (newDistance < currentDistance) {
+        return dir;
+      }
+    }
+
+    // Return first valid direction
+    return validDirs[0] || null;
   }
 
   // Check if character is at a building and can interact
@@ -1290,6 +1389,8 @@ export class MainScene extends Phaser.Scene {
               state: "wandering", // Reset state after moving in
               currentDestination: undefined,
               lastFailedBuildingKey: undefined, // Clear failed building tracker
+              willLeaveAtMonthEnd: false, // Clear leaving flag - they found a home!
+              homelessSince: undefined, // Clear homeless tracking
             };
           } else {
             // Building is full! Clear destination and set cooldown so they try somewhere else
@@ -1313,7 +1414,27 @@ export class MainScene extends Phaser.Scene {
           const cost = economics.incomePerInteraction;
           const citizenMoney = char.money ?? 0;
           
-          if (citizenMoney >= cost) {
+          // Check if this is a food business (by name)
+          const buildingName = building.name.toLowerCase();
+          const isFoodBusiness = buildingName.includes("dunkin") || 
+                                 buildingName.includes("popeyes") || 
+                                 buildingName.includes("checkers") ||
+                                 buildingName.includes("martini") ||
+                                 buildingName.includes("bar") ||
+                                 buildingName.includes("restaurant") ||
+                                 buildingName.includes("cafe") ||
+                                 buildingName.includes("food");
+          
+          const isEntertainment = !isFoodBusiness; // All non-food businesses are entertainment
+          
+          // Calculate reserved money for other needs (budgeting)
+          const reservedMoney = this.calculateReservedMoney(
+            char,
+            isFoodBusiness ? "food" : "entertainment"
+          );
+          
+          // Check if they can afford this cost AND have enough left for other needs
+          if (citizenMoney >= cost + reservedMoney) {
             // Deduct money from citizen and notify React
             this.events_.onCitizenSpend?.(char.id, cost);
             this.events_.onBuildingInteraction?.(
@@ -1323,11 +1444,23 @@ export class MainScene extends Phaser.Scene {
               "income",
               char.id
             );
+            
+            // Update needs: mark food/entertainment
+            const updatedNeeds: Partial<CharacterWithResidence> = {};
+            if (isFoodBusiness) {
+              updatedNeeds.ateToday = true;
+              (updatedNeeds as any).framesSinceLastFood = 0; // Reset food timer
+            }
+            if (isEntertainment) {
+              updatedNeeds.entertainedToday = true;
+            }
+            
             // Set cooldown to prevent spam (5 seconds at normal speed = 5000ms)
             return {
               ...char,
               money: citizenMoney - cost,
               interactionCooldown: 5000,
+              ...updatedNeeds,
             };
           }
           // Can't afford - mark as broke and clear destination so they go home or wander
@@ -1357,12 +1490,81 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
+  // Calculate moodlet based on citizen's needs and status
+  // Tracks frames since last food: 1 day = ~1 minute = 3600 frames at 60fps
+  // 8 hours = 1/3 day = 1200 frames
+  private calculateMoodlet(char: CharacterWithResidence & { framesSinceLastFood?: number }): { moodlet: MoodletType; reason: string } {
+    const hasHome = char.residenceX !== undefined && char.residenceY !== undefined;
+    const citizenMoney = char.money ?? 0;
+    const ateToday = char.ateToday ?? false;
+    const entertainedToday = char.entertainedToday ?? false;
+    
+    // Check hours since last food (converting frames to hours)
+    const framesSinceFood = (char as any).framesSinceLastFood || (ateToday ? 0 : 1200);
+    const hoursSinceFood = Math.floor((framesSinceFood / 3600) * 24); // Convert frames to hours
+    const needsFood = !ateToday || framesSinceFood >= 1200; // 8 hours worth of frames
+    
+    // Priority 1: Homeless → Depressed
+    if (!hasHome) {
+      // Check if they've been homeless for a while (will leave at month end)
+      if (char.homelessSince === undefined) {
+        return { moodlet: "depressed", reason: "I'm homeless and searching for a place to live..." };
+      }
+      return { moodlet: "depressed", reason: "I've been homeless too long... I might have to leave this city" };
+    }
+    
+    // Priority 2: No money to buy food → Angry
+    if (citizenMoney <= 5 && needsFood) {
+      return { moodlet: "angry", reason: "I'm so hungry but I can't afford any food!" };
+    }
+    
+    // Priority 3: Needs food → Hungry (must eat within 8 hours)
+    if (needsFood) {
+      const hours = Math.floor(hoursSinceFood);
+      if (hours === 0) {
+        return { moodlet: "hungry", reason: "I'm getting hungry, I should find some food!" };
+      } else if (hours === 1) {
+        return { moodlet: "hungry", reason: "I haven't eaten in an hour, I need food!" };
+      } else {
+        return { moodlet: "hungry", reason: `I haven't eaten in ${hours} hours, I really need to find food!` };
+      }
+    }
+    
+    // Priority 4: All needs met → Happy
+    if (hasHome && ateToday && entertainedToday) {
+      // 1/100 chance for rare happy message
+      if (Math.random() < 0.01) {
+        return { moodlet: "happy", reason: "Thinking about bangin nerds mom" };
+      }
+      return { moodlet: "happy", reason: "I have a home, I'm well fed, and I'm having fun!" };
+    }
+    
+    // Priority 5: Some need unmet → Sad
+    if (!ateToday || !entertainedToday) {
+      const reasons: string[] = [];
+      if (!ateToday) reasons.push("I haven't eaten today");
+      if (!entertainedToday) reasons.push("I need some entertainment");
+      return { moodlet: "sad", reason: `I'm feeling down... ${reasons.join(" and ")}` };
+    }
+    
+    // Default: neutral/sad
+    return { moodlet: "sad", reason: "I'm feeling a bit down" };
+  }
+
   private updateSingleCharacter(char: CharacterWithResidence): CharacterWithResidence {
     this.debugLogCounter++;
 
     // Citizens resting at home don't move - they're waiting for the next day
     if (char.state === "resting_at_home") {
       return char; // No updates needed, they're "inside" their home
+    }
+    
+    // Citizens leaving the city - check if they've reached the edge
+    if (char.state === "leaving_city") {
+      if (this.checkCitizenReachedEdge(char)) {
+        // They've reached the edge - will be removed by removeCitizensWhoLeft()
+        return char;
+      }
     }
 
     const { x, y, direction, speed } = char;
@@ -1379,22 +1581,43 @@ export class MainScene extends Phaser.Scene {
     }
 
     // Check for building interactions (updates char if interaction occurred)
-    let updatedChar: CharacterWithResidence = {
+    let interactionUpdatedChar: CharacterWithResidence = {
       ...char,
       interactionCooldown: newInteractionCooldown,
     };
-    updatedChar = this.checkBuildingInteraction(updatedChar);
+    interactionUpdatedChar = this.checkBuildingInteraction(interactionUpdatedChar);
 
     // Use updated char from interaction check
-    char = updatedChar;
+    char = interactionUpdatedChar;
     newInteractionCooldown = char.interactionCooldown;
 
+    // Track needs: increment frames since last food ONLY if they haven't eaten today
+    // If they ate today, reset to 0
+    let framesSinceLastFood = (char as any).framesSinceLastFood || 0;
+    if (char.ateToday) {
+      framesSinceLastFood = 0; // Reset if they ate today
+    } else {
+      framesSinceLastFood += this.gameSpeed === GameSpeed.Paused ? 0 : 1; // Increment if haven't eaten
+    }
+    
+    // Calculate moodlet based on needs
+    const previousMoodlet = char.moodlet || null;
+    const moodletResult = this.calculateMoodlet({ ...char, framesSinceLastFood });
+    const newMoodlet = moodletResult.moodlet;
+    const moodletReason = moodletResult.reason;
+    
+    // Check if moodlet changed (for particle effects)
+    const moodletChanged = previousMoodlet !== newMoodlet;
+    
     // Track current position for stuck detection (declare early for use in early returns)
     const currentPos = { x: tileX, y: tileY };
 
     // Determine citizen state and destination
     let state = char.state || "wandering";
     let currentDestination = char.currentDestination;
+    
+    // Check if we should allow grass (when leaving city) - declare early for use in checks
+    const allowGrassForState = state === "leaving_city";
 
     // Check if destination building still exists (might have been deleted)
     if (currentDestination && currentDestination.buildingOriginX !== undefined && currentDestination.buildingOriginY !== undefined) {
@@ -1407,10 +1630,14 @@ export class MainScene extends Phaser.Scene {
     }
     
     // Also check if the destination tile itself is still walkable
-    if (currentDestination && !this.isWalkable(currentDestination.x, currentDestination.y)) {
+    // Allow grass if leaving the city
+    if (currentDestination && !this.isWalkable(currentDestination.x, currentDestination.y, allowGrassForState)) {
       // Destination tile is no longer walkable (building expanded over it, etc.)
-      currentDestination = undefined;
-      state = "wandering";
+      // Unless we're leaving, then just continue anyway
+      if (state !== "leaving_city") {
+        currentDestination = undefined;
+        state = "wandering";
+      }
     }
 
     // If citizen has no residence and is wandering, look for a home they can AFFORD
@@ -1504,42 +1731,108 @@ export class MainScene extends Phaser.Scene {
       }
       // If no home or can't reach it, just wander (don't try to visit businesses)
     }
-    // If citizen has money and is wandering, occasionally visit a business they can AFFORD
-    else if (state === "wandering" && !currentDestination && !isBroke && Math.random() < 0.01) {
-      // 1% chance per frame to visit a business
-      const nearbyBuildings = this.findNearbyBuildings(x, y, 12);
-      const businessBuildings = nearbyBuildings.filter((b) => {
-        const building = getBuilding(b.buildingId);
-        if (!building) return false;
-        const economics = getBuildingEconomics(building);
-        // Only consider businesses they can afford
-        const cost = economics.incomePerInteraction ?? 0;
-        return (
-          (building.category === "commercial" ||
-            building.category === "civic" ||
-            building.category === "landmark") &&
-          economics.incomePerInteraction !== undefined &&
-          citizenMoney >= cost
-        );
-      });
+    // If citizen has money and is wandering, prioritize needs:
+    // Priority 1: Housing (already handled above)
+    // Priority 2: Food (if hungry - haven't eaten in 8 hours)
+    // Priority 3: Entertainment (businesses)
+    // Depressed (homeless) citizens are less likely to spend money
+    else if (state === "wandering" && !currentDestination && !isBroke) {
+      const isDepressed = char.moodlet === "depressed"; // Homeless = depressed
+      const framesSinceFood = ((char as any).framesSinceLastFood || 0);
+      const needsFood = !char.ateToday || framesSinceFood >= 1200; // 8 hours worth of frames
+      const needsEntertainment = !char.entertainedToday;
 
-      if (businessBuildings.length > 0) {
-        // Shuffle and try each business until we find one we can reach via SIDEWALKS
-        const shuffled = [...businessBuildings].sort(() => Math.random() - 0.5);
-        for (const target of shuffled) {
+      // Depressed citizens are much less likely to visit businesses (only 20% chance)
+      if (isDepressed && Math.random() > 0.2) {
+        // Skip business visits if depressed (unless very lucky)
+      } else {
+
+      // Determine priority based on needs - actively seek buildings (not chance-based)
+      // Priority: Food > Entertainment (food is more urgent)
+      let priorityBuildings: Array<{ buildingId: string; originX: number; originY: number; distance: number }> = [];
+
+      if (needsFood) {
+        // Priority 2: Food - actively seek food businesses if hungry (highest priority)
+        const nearbyBuildings = this.findNearbyBuildings(x, y, 20); // Increased range
+        const reservedMoney = this.calculateReservedMoney(char, "food");
+        priorityBuildings = nearbyBuildings.filter((b) => {
+          const building = getBuilding(b.buildingId);
+          if (!building || building.category === "residential") return false;
+          const economics = getBuildingEconomics(building);
+          const cost = economics.incomePerInteraction ?? 0;
+
+          // Only food businesses
+          const buildingName = building.name.toLowerCase();
+          const isFoodBusiness = buildingName.includes("dunkin") ||
+                                 buildingName.includes("popeyes") ||
+                                 buildingName.includes("checkers") ||
+                                 buildingName.includes("martini") ||
+                                 buildingName.includes("bar") ||
+                                 buildingName.includes("restaurant") ||
+                                 buildingName.includes("cafe") ||
+                                 buildingName.includes("food");
+
+          return (
+            isFoodBusiness &&
+            economics.incomePerInteraction !== undefined &&
+            citizenMoney >= cost + reservedMoney // Must have enough for this AND reserved money
+          );
+        });
+        // Sort by distance (nearest first)
+        priorityBuildings.sort((a, b) => a.distance - b.distance);
+      }
+      
+      // If no food buildings found (or not hungry), seek entertainment if needed
+      if (priorityBuildings.length === 0 && needsEntertainment) {
+        // Priority 3: Entertainment - actively seek businesses if bored
+        const nearbyBuildings = this.findNearbyBuildings(x, y, 20); // Increased range
+        const reservedMoney = this.calculateReservedMoney(char, "entertainment");
+        priorityBuildings = nearbyBuildings.filter((b) => {
+          const building = getBuilding(b.buildingId);
+          if (!building || building.category === "residential") return false;
+          const economics = getBuildingEconomics(building);
+          const cost = economics.incomePerInteraction ?? 0;
+          
+          // Exclude food businesses (those are for food needs, not entertainment)
+          const buildingName = building.name.toLowerCase();
+          const isFoodBusiness = buildingName.includes("dunkin") ||
+                                 buildingName.includes("popeyes") ||
+                                 buildingName.includes("checkers") ||
+                                 buildingName.includes("martini") ||
+                                 buildingName.includes("bar") ||
+                                 buildingName.includes("restaurant") ||
+                                 buildingName.includes("cafe") ||
+                                 buildingName.includes("food");
+          
+          return (
+            !isFoodBusiness && // Exclude food businesses
+            (building.category === "commercial" ||
+              building.category === "civic" ||
+              building.category === "landmark") &&
+            economics.incomePerInteraction !== undefined &&
+            citizenMoney >= cost + reservedMoney // Must have enough for this AND reserved money
+          );
+        });
+        // Sort by distance (nearest first)
+        priorityBuildings.sort((a, b) => a.distance - b.distance);
+      }
+
+      if (priorityBuildings.length > 0) {
+        // Try each business in order of distance (nearest first) until we find one we can reach
+        for (const target of priorityBuildings) {
           const adjacentTiles = this.getBuildingAdjacentTiles(
             target.originX,
             target.originY,
             target.buildingId
           );
-          
+
           // Only consider buildings that have sidewalk-accessible tiles
           const sidewalkTiles = adjacentTiles.filter(t => this.isSidewalk(t.x, t.y));
           if (sidewalkTiles.length === 0) {
             // No sidewalk access to this building, skip it
             continue;
           }
-          
+
           // Try to reach a sidewalk tile first
           const reachable = this.canReachAnyTarget(tileX, tileY, sidewalkTiles);
           if (reachable) {
@@ -1555,6 +1848,7 @@ export class MainScene extends Phaser.Scene {
           }
         }
       }
+      } // End else block for depressed check
     }
 
     // If heading to a building, check if we've arrived (close enough to interact)
@@ -1671,8 +1965,8 @@ export class MainScene extends Phaser.Scene {
       }
     }
 
-    // Check if current tile is still walkable
-    if (!this.isWalkable(tileX, tileY)) {
+    // Check if current tile is still walkable (allow grass if leaving)
+    if (!this.isWalkable(tileX, tileY, allowGrassForState)) {
       const walkableTiles: { x: number; y: number }[] = [];
       for (let gy = 0; gy < GRID_HEIGHT; gy++) {
         for (let gx = 0; gx < GRID_WIDTH; gx++) {
@@ -1680,7 +1974,8 @@ export class MainScene extends Phaser.Scene {
           if (
             tileType === TileType.Road ||
             tileType === TileType.Tile ||
-            tileType === TileType.Asphalt
+            tileType === TileType.Asphalt ||
+            (allowGrassForState && tileType === TileType.Grass)
           ) {
             walkableTiles.push({ x: gx, y: gy });
           }
@@ -1732,8 +2027,8 @@ export class MainScene extends Phaser.Scene {
       
       if (isOscillating) {
         oscillationCounter += 1;
-        // If oscillating for 2+ seconds (120 frames), give up
-        if (oscillationCounter > 120) {
+        // If oscillating for 2+ seconds (120 frames), give up (unless leaving city)
+        if (oscillationCounter > 120 && state !== "leaving_city") {
           console.log(`[Citizen ${char.id.slice(0,4)}] Oscillating between tiles, giving up on destination`);
           state = "wandering";
           currentDestination = undefined;
@@ -1755,7 +2050,8 @@ export class MainScene extends Phaser.Scene {
       }
 
       // Only after being stuck for a VERY long time (5+ seconds), give up on destination
-      if (stuckCounter > 300) {
+      // (Don't give up if leaving city - they must reach the edge)
+      if (stuckCounter > 300 && state !== "leaving_city") {
         console.log(`[Citizen ${char.id.slice(0,4)}] Giving up on destination after 5s stuck`);
         state = "wandering";
         currentDestination = undefined;
@@ -1771,8 +2067,74 @@ export class MainScene extends Phaser.Scene {
     let nextX = x;
     let nextY = y;
 
+    // If leaving the city, pathfind to edge (allow grass)
+    if (state === "leaving_city" && currentDestination) {
+      this.debugLog(char.id, `Leaving city: heading to edge (${currentDestination.x}, ${currentDestination.y}), pos: (${tileX}, ${tileY})`);
+      
+      // Check if current direction would lead into a wall (allow grass when leaving)
+      const currentDirVec = directionVectors[direction];
+      const aheadTileX = tileX + currentDirVec.dx;
+      const aheadTileY = tileY + currentDirVec.dy;
+      const isCurrentDirBlocked = !this.isWalkable(aheadTileX, aheadTileY, true); // allowGrass = true
+      
+      if (nearCenter) {
+        // Full pathfinding at tile centers (allow grass)
+        const targetDir = this.moveTowardsTarget(char, currentDestination.x, currentDestination.y, true);
+        this.debugLog(char.id, `Pathfinding (leaving) returned: ${targetDir}`);
+        
+        if (targetDir) {
+          // Check if the direction is actually walkable (allow grass)
+          const targetVec = directionVectors[targetDir];
+          const nextTileX = tileX + targetVec.dx;
+          const nextTileY = tileY + targetVec.dy;
+          const isNextWalkable = this.isWalkable(nextTileX, nextTileY, true);
+          
+          if (isNextWalkable) {
+            newDirection = targetDir;
+          } else {
+            // Try greedy with grass allowed
+            const greedyDir = this.moveTowardsTargetGreedyWithGrass(tileX, tileY, currentDestination.x, currentDestination.y);
+            if (greedyDir) {
+              newDirection = greedyDir;
+            } else {
+              // Any valid direction (allow grass)
+              const validDirs = this.getValidDirections(tileX, tileY, true, true);
+              if (validDirs.length > 0) {
+                newDirection = validDirs[0];
+              }
+            }
+          }
+        } else {
+          // Pathfinding returned null - try greedy or pick any valid direction
+          const greedyDir = this.moveTowardsTargetGreedyWithGrass(tileX, tileY, currentDestination.x, currentDestination.y);
+          if (greedyDir) {
+            newDirection = greedyDir;
+          } else {
+            const validDirs = this.getValidDirections(tileX, tileY, true, true);
+            if (validDirs.length > 0) {
+              newDirection = validDirs[0];
+            }
+          }
+        }
+      } else if (isCurrentDirBlocked) {
+        // Not near center but direction is blocked - pick a valid direction (allow grass)
+        const greedyDir = this.moveTowardsTargetGreedyWithGrass(tileX, tileY, currentDestination.x, currentDestination.y);
+        if (greedyDir) {
+          newDirection = greedyDir;
+        } else {
+          const validDirs = this.getValidDirections(tileX, tileY, true, true);
+          const opposite = oppositeDirection[direction];
+          const preferredDirs = validDirs.filter(d => d !== opposite);
+          if (preferredDirs.length > 0) {
+            newDirection = preferredDirs[0];
+          } else if (validDirs.length > 0) {
+            newDirection = validDirs[0];
+          }
+        }
+      }
+    }
     // If we have a destination, try to pathfind towards it
-    if (currentDestination && (state === "heading_to_building" || state === "heading_home")) {
+    else if (currentDestination && (state === "heading_to_building" || state === "heading_home")) {
       this.debugLog(char.id, `Has destination: (${currentDestination.x}, ${currentDestination.y}), state: ${state}, nearCenter: ${nearCenter}, pos: (${tileX}, ${tileY})`);
       
       // Check if current direction would lead into a wall
@@ -1849,7 +2211,7 @@ export class MainScene extends Phaser.Scene {
       const nextTileX = tileX + vec.dx;
       const nextTileY = tileY + vec.dy;
 
-      if (!this.isWalkable(nextTileX, nextTileY)) {
+      if (!this.isWalkable(nextTileX, nextTileY, allowGrassForState)) {
         const newDir = this.pickNewDirection(tileX, tileY, direction);
         if (newDir) {
           newDirection = newDir;
@@ -1857,7 +2219,7 @@ export class MainScene extends Phaser.Scene {
         }
         // If no valid direction, keep current direction (will be blocked at end)
       } else {
-        const validDirs = this.getValidDirections(tileX, tileY);
+        const validDirs = this.getValidDirections(tileX, tileY, true, allowGrassForState);
         if (validDirs.length > 2 && Math.random() < 0.1) {
           const newDir = this.pickNewDirection(tileX, tileY, direction);
           if (newDir) {
@@ -1869,19 +2231,22 @@ export class MainScene extends Phaser.Scene {
     }
 
     // Emergency check: if we have no valid directions, we're trapped
-    const validDirs = this.getValidDirections(tileX, tileY);
+    // Allow grass if leaving city
+    const validDirs = this.getValidDirections(tileX, tileY, true, allowGrassForState);
     if (validDirs.length === 0) {
-      // Find any walkable tile and teleport there
+      // Find any walkable tile and teleport there (allow grass if leaving)
       for (let gy = 0; gy < GRID_HEIGHT; gy++) {
         for (let gx = 0; gx < GRID_WIDTH; gx++) {
-          if (this.isWalkable(gx, gy)) {
+          if (this.isWalkable(gx, gy, allowGrassForState)) {
+            // Keep leaving_city state if they're leaving, otherwise reset to wandering
+            const newState = state === "leaving_city" ? "leaving_city" : "wandering";
             return {
               ...char,
               x: gx + 0.5,
               y: gy + 0.5,
               direction: allDirections[Math.floor(Math.random() * allDirections.length)],
-              state: "wandering",
-              currentDestination: undefined,
+              state: newState,
+              currentDestination: state === "leaving_city" ? currentDestination : undefined,
               interactionCooldown: newInteractionCooldown,
               stuckCounter: 0,
               lastPosition: { x: gx, y: gy },
@@ -1898,7 +2263,8 @@ export class MainScene extends Phaser.Scene {
     const finalTileX = Math.floor(nextX);
     const finalTileY = Math.floor(nextY);
 
-    if (!this.isWalkable(finalTileX, finalTileY)) {
+    // Allow grass if leaving city
+    if (!this.isWalkable(finalTileX, finalTileY, allowGrassForState)) {
       if (this.debugLogCounter % 60 === 0) {
         console.log(`[Citizen ${char.id.slice(0,4)}] BLOCKED - final tile (${finalTileX},${finalTileY}) not walkable, staying at (${tileX},${tileY})`);
       }
@@ -1927,7 +2293,7 @@ export class MainScene extends Phaser.Scene {
     const clearFailedBuilding = !char.lastFailedBuildingKey || 
       (newInteractionCooldown === 0 && finalStuckCounter === 0);
     
-    return {
+    const updatedChar = {
       ...char,
       x: nextX,
       y: nextY,
@@ -1941,7 +2307,21 @@ export class MainScene extends Phaser.Scene {
       // Track oscillation for stuck detection
       oscillationCounter: oscillationCounter,
       secondLastPosition: lastPos ? { x: lastPos.x, y: lastPos.y } : undefined,
-    } as CharacterWithResidence & { oscillationCounter?: number; secondLastPosition?: { x: number; y: number } };
+      // Track needs and moodlets
+      framesSinceLastFood: framesSinceLastFood,
+      moodlet: newMoodlet,
+      moodletReason: moodletReason,
+      previousMoodlet: previousMoodlet,
+      // Track homeless status - set willLeaveAtMonthEnd if homeless
+      willLeaveAtMonthEnd: char.residenceX ? false : true, // All homeless citizens will leave at month end
+      homelessSince: char.residenceX ? undefined : (char.homelessSince ?? undefined),
+    } as CharacterWithResidence & { 
+      oscillationCounter?: number; 
+      secondLastPosition?: { x: number; y: number };
+      framesSinceLastFood?: number;
+    };
+    
+    return updatedChar;
   }
 
   // ============================================
@@ -2900,6 +3280,15 @@ export class MainScene extends Phaser.Scene {
       money: dailyBudget, // Start with their daily budget
       dailyBudget,
       rentPaid: false,
+      // Initialize needs tracking
+      lastFoodTime: 12, // Start having eaten at noon
+      ateToday: true,
+      entertainedToday: false,
+      moodlet: null,
+      moodletReason: "",
+      previousMoodlet: null,
+      willLeaveAtMonthEnd: false,
+      homelessSince: undefined,
     };
 
     this.characters.push(newCharacter);
@@ -3059,6 +3448,11 @@ export class MainScene extends Phaser.Scene {
       citizen.money = citizen.dailyBudget ?? MIN_DAILY_BUDGET;
       citizen.brokeUntilNextDay = false;
       
+      // Reset daily needs (ateToday, entertainedToday)
+      citizen.ateToday = false;
+      citizen.entertainedToday = false;
+      (citizen as any).framesSinceLastFood = (citizen as any).framesSinceLastFood || 0; // Keep tracking
+
       // Wake up citizens who were resting at home
       if (citizen.state === "resting_at_home") {
         citizen.state = "wandering";
@@ -3078,6 +3472,150 @@ export class MainScene extends Phaser.Scene {
         }
       }
     }
+  }
+  
+  // Mark homeless citizens to start leaving at end of month
+  // Returns number of citizens marked to leave
+  removeHomelessCitizens(): number {
+    let count = 0;
+    
+    for (const citizen of this.characters) {
+      if (citizen.willLeaveAtMonthEnd && !citizen.residenceX && citizen.state !== "leaving_city") {
+        // Find the closest map edge
+        const edgeTarget = this.findClosestMapEdge(citizen.x, citizen.y);
+        if (edgeTarget) {
+          citizen.state = "leaving_city";
+          citizen.currentDestination = {
+            x: edgeTarget.x,
+            y: edgeTarget.y,
+          };
+          count++;
+        }
+      }
+    }
+    
+    return count;
+  }
+  
+  // Find the closest walkable tile on the map edge
+  private findClosestMapEdge(charX: number, charY: number): { x: number; y: number } | null {
+    const tileX = Math.floor(charX);
+    const tileY = Math.floor(charY);
+    
+    // Check all edge tiles and find the closest walkable one
+    // Prefer roads, but allow grass if no roads
+    let closestRoad: { x: number; y: number; distance: number } | null = null;
+    let closestWalkable: { x: number; y: number; distance: number } | null = null;
+    
+    // Check top edge (y = 0)
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      if (this.isWalkable(x, 0) || this.grid[0]?.[x]?.type === TileType.Grass) {
+        const distance = Math.abs(x - tileX) + Math.abs(0 - tileY);
+        if (this.isWalkable(x, 0)) {
+          if (!closestRoad || distance < closestRoad.distance) {
+            closestRoad = { x, y: 0, distance };
+          }
+        }
+        if (!closestWalkable || distance < closestWalkable.distance) {
+          closestWalkable = { x, y: 0, distance };
+        }
+      }
+    }
+    
+    // Check bottom edge (y = GRID_HEIGHT - 1)
+    for (let x = 0; x < GRID_WIDTH; x++) {
+      const y = GRID_HEIGHT - 1;
+      if (this.isWalkable(x, y) || this.grid[y]?.[x]?.type === TileType.Grass) {
+        const distance = Math.abs(x - tileX) + Math.abs(y - tileY);
+        if (this.isWalkable(x, y)) {
+          if (!closestRoad || distance < closestRoad.distance) {
+            closestRoad = { x, y, distance };
+          }
+        }
+        if (!closestWalkable || distance < closestWalkable.distance) {
+          closestWalkable = { x, y, distance };
+        }
+      }
+    }
+    
+    // Check left edge (x = 0)
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      if (this.isWalkable(0, y) || this.grid[y]?.[0]?.type === TileType.Grass) {
+        const distance = Math.abs(0 - tileX) + Math.abs(y - tileY);
+        if (this.isWalkable(0, y)) {
+          if (!closestRoad || distance < closestRoad.distance) {
+            closestRoad = { x: 0, y, distance };
+          }
+        }
+        if (!closestWalkable || distance < closestWalkable.distance) {
+          closestWalkable = { x: 0, y, distance };
+        }
+      }
+    }
+    
+    // Check right edge (x = GRID_WIDTH - 1)
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      const x = GRID_WIDTH - 1;
+      if (this.isWalkable(x, y) || this.grid[y]?.[x]?.type === TileType.Grass) {
+        const distance = Math.abs(x - tileX) + Math.abs(y - tileY);
+        if (this.isWalkable(x, y)) {
+          if (!closestRoad || distance < closestRoad.distance) {
+            closestRoad = { x, y, distance };
+          }
+        }
+        if (!closestWalkable || distance < closestWalkable.distance) {
+          closestWalkable = { x, y, distance };
+        }
+      }
+    }
+    
+    // Prefer road if available, otherwise use any walkable edge
+    if (closestRoad) {
+      return { x: closestRoad.x, y: closestRoad.y };
+    }
+    if (closestWalkable) {
+      return { x: closestWalkable.x, y: closestWalkable.y };
+    }
+    
+    return null;
+  }
+  
+  // Check if citizen has reached map edge and should be removed
+  private checkCitizenReachedEdge(char: CharacterWithResidence): boolean {
+    const tileX = Math.floor(char.x);
+    const tileY = Math.floor(char.y);
+    
+    // Check if on edge of map
+    return tileX <= 0 || tileX >= GRID_WIDTH - 1 || tileY <= 0 || tileY >= GRID_HEIGHT - 1;
+  }
+  
+  // Remove citizens who have left the map
+  private removeCitizensWhoLeft(): number {
+    const citizensToRemove: string[] = [];
+    
+    for (const citizen of this.characters) {
+      if (citizen.state === "leaving_city" && this.checkCitizenReachedEdge(citizen)) {
+        citizensToRemove.push(citizen.id);
+      }
+    }
+    
+    // Remove citizens who reached the edge
+    for (const id of citizensToRemove) {
+      const index = this.characters.findIndex((c) => c.id === id);
+      if (index !== -1) {
+        // Remove sprite
+        const sprite = this.characterSprites.get(id);
+        if (sprite) {
+          sprite.destroy();
+          this.characterSprites.delete(id);
+        }
+        
+        // Remove character
+        this.characters.splice(index, 1);
+      }
+    }
+    
+    return citizensToRemove.length;
   }
 
   // Reset rent paid status for all citizens (called at start of month)
@@ -3765,6 +4303,55 @@ export class MainScene extends Phaser.Scene {
     return `${carType}_${dirMap[direction]}`;
   }
 
+  // Trigger particle effects when moodlet changes
+  private triggerMoodletParticles(charId: string, moodlet: MoodletType, x: number, y: number): void {
+    if (!moodlet) return; // No moodlet, no particles
+    
+    // Create simple particle effects based on moodlet type
+    const colors: Record<NonNullable<MoodletType>, number> = {
+      happy: 0x00ff00, // Green
+      sad: 0x808080, // Gray
+      hungry: 0xffa500, // Orange
+      angry: 0xff0000, // Red
+      depressed: 0x4b0082, // Indigo
+    };
+    
+    const emojis: Record<NonNullable<MoodletType>, string> = {
+      happy: "😊",
+      sad: "😢",
+      hungry: "🍔",
+      angry: "😠",
+      depressed: "😔",
+    };
+    
+    const color = colors[moodlet] || 0xffffff;
+    const emoji = emojis[moodlet] || "";
+    
+    // Create a simple particle burst using Phaser's built-in particles
+    // For simplicity, we'll create a temporary sprite that fades out
+    if (emoji) {
+      // Use a text sprite for emoji particles (simpler than full particle system)
+      const particle = this.add.text(x, y - 30, emoji, {
+        fontSize: "24px",
+        color: `#${color.toString(16).padStart(6, '0')}`,
+      });
+      particle.setDepth(9999); // Above everything
+      particle.setOrigin(0.5, 0.5);
+      
+      // Animate the particle
+      this.tweens.add({
+        targets: particle,
+        y: y - 60,
+        alpha: 0,
+        duration: 1000,
+        ease: "Power2",
+        onComplete: () => {
+          particle.destroy();
+        },
+      });
+    }
+  }
+
   private renderCharacters(): void {
     const currentCharIds = new Set(this.characters.map((c) => c.id));
     this.characterSprites.forEach((sprite, id) => {
@@ -3777,6 +4364,11 @@ export class MainScene extends Phaser.Scene {
     for (const char of this.characters) {
       const screenPos = this.gridToScreen(char.x, char.y);
       const centerY = screenPos.y + TILE_HEIGHT / 2;
+      
+      // Check if moodlet changed and trigger particles
+      if (char.moodlet && char.previousMoodlet !== char.moodlet && char.previousMoodlet !== undefined) {
+        this.triggerMoodletParticles(char.id, char.moodlet, screenPos.x, centerY);
+      }
       const textureKey = this.getCharacterTextureKey(
         char.characterType,
         char.direction

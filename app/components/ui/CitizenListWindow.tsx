@@ -1,6 +1,6 @@
 "use client";
 
-import { CharacterType } from "@/app/components/game/types";
+import { CharacterType, MoodletType } from "@/app/components/game/types";
 import { playDoubleClickSound, playClickSound } from "@/app/utils/sounds";
 
 export interface CitizenListItem {
@@ -10,6 +10,8 @@ export interface CitizenListItem {
   characterType: CharacterType;
   hasResidence: boolean;
   residenceBuildingName?: string;
+  moodlet?: MoodletType;
+  moodletReason?: string;
 }
 
 interface CitizenListWindowProps {
@@ -34,6 +36,42 @@ const getCitizenSpritePath = (characterType: CharacterType): string => {
     return `/Characters/applewalksouth.gif`;
   }
   return `/Characters/bananawalksouth.gif`;
+};
+
+// Get moodlet emoji
+const getMoodletEmoji = (moodlet?: MoodletType): string => {
+  switch (moodlet) {
+    case "happy":
+      return "😊";
+    case "sad":
+      return "😢";
+    case "hungry":
+      return "🍔";
+    case "angry":
+      return "😠";
+    case "depressed":
+      return "😔";
+    default:
+      return "";
+  }
+};
+
+// Get moodlet color
+const getMoodletColor = (moodlet?: MoodletType): string => {
+  switch (moodlet) {
+    case "happy":
+      return "#00ff00";
+    case "sad":
+      return "#808080";
+    case "hungry":
+      return "#ffa500";
+    case "angry":
+      return "#ff0000";
+    case "depressed":
+      return "#4b0082";
+    default:
+      return "#888";
+  }
 };
 
 export default function CitizenListWindow({
@@ -227,16 +265,37 @@ export default function CitizenListWindow({
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div
                     style={{
-                      fontSize: 14,
-                      fontWeight: "bold",
-                      fontFamily: "var(--font-pixelify), monospace",
-                      color: "#fff",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
                       overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
                     }}
                   >
-                    {citizen.name}
+                    {citizen.moodlet && (
+                      <span
+                        style={{
+                          fontSize: 16,
+                          flexShrink: 0,
+                          title: citizen.moodletReason || citizen.moodlet,
+                        }}
+                      >
+                        {getMoodletEmoji(citizen.moodlet)}
+                      </span>
+                    )}
+                    <span
+                      style={{
+                        fontSize: 14,
+                        fontWeight: "bold",
+                        fontFamily: "var(--font-pixelify), monospace",
+                        color: "#fff",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        flex: 1,
+                      }}
+                    >
+                      {citizen.name}
+                    </span>
                   </div>
                   <div
                     style={{
