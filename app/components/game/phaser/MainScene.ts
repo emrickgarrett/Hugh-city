@@ -1816,6 +1816,42 @@ export class MainScene extends Phaser.Scene {
         // Sort by distance (nearest first)
         priorityBuildings.sort((a, b) => a.distance - b.distance);
       }
+      
+      // If no priority buildings found and citizen has eaten but has extra money, 
+      // allow them to visit food businesses again (optional extra meal)
+      if (priorityBuildings.length === 0 && char.ateToday && !needsEntertainment) {
+        // Only if they have plenty of money (at least 2x the average food cost + entertainment reserve)
+        const extraMoneyThreshold = 60; // Enough for food + entertainment + buffer
+        if (citizenMoney >= extraMoneyThreshold) {
+          const nearbyBuildings = this.findNearbyBuildings(x, y, 15); // Smaller range for optional visits
+          const reservedMoney = this.calculateReservedMoney(char, "food");
+          priorityBuildings = nearbyBuildings.filter((b) => {
+            const building = getBuilding(b.buildingId);
+            if (!building || building.category === "residential") return false;
+            const economics = getBuildingEconomics(building);
+            const cost = economics.incomePerInteraction ?? 0;
+            
+            // Only food businesses for optional extra meals
+            const buildingName = building.name.toLowerCase();
+            const isFoodBusiness = buildingName.includes("dunkin") ||
+                                   buildingName.includes("popeyes") ||
+                                   buildingName.includes("checkers") ||
+                                   buildingName.includes("martini") ||
+                                   buildingName.includes("bar") ||
+                                   buildingName.includes("restaurant") ||
+                                   buildingName.includes("cafe") ||
+                                   buildingName.includes("food");
+            
+            return (
+              isFoodBusiness &&
+              economics.incomePerInteraction !== undefined &&
+              citizenMoney >= cost + reservedMoney
+            );
+          });
+          // Sort by distance (nearest first)
+          priorityBuildings.sort((a, b) => a.distance - b.distance);
+        }
+      }
 
       if (priorityBuildings.length > 0) {
         // Try each business in order of distance (nearest first) until we find one we can reach

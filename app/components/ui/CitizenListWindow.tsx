@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useRef, useEffect } from "react";
 import { CharacterType, MoodletType } from "@/app/components/game/types";
 import { playDoubleClickSound, playClickSound } from "@/app/utils/sounds";
 
@@ -80,6 +81,54 @@ export default function CitizenListWindow({
   citizens,
   onCitizenClick,
 }: CitizenListWindowProps) {
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const windowRef = useRef<HTMLDivElement>(null);
+
+  // Reset position when window opens
+  useEffect(() => {
+    if (isVisible) {
+      setPosition({ x: 0, y: 0 });
+    }
+  }, [isVisible]);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent closing the window
+    if (windowRef.current) {
+      const rect = windowRef.current.getBoundingClientRect();
+      setDragOffset({
+        x: e.clientX - rect.left - rect.width / 2,
+        y: e.clientY - rect.top - rect.height / 2,
+      });
+      setIsDragging(true);
+    }
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        setPosition({
+          x: e.clientX - window.innerWidth / 2 - dragOffset.x,
+          y: e.clientY - window.innerHeight / 2 - dragOffset.y,
+        });
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+      return () => {
+        document.removeEventListener("mousemove", handleMouseMove);
+        document.removeEventListener("mouseup", handleMouseUp);
+      };
+    }
+  }, [isDragging, dragOffset]);
+
   if (!isVisible) return null;
 
   const GRAY_COLORS = {
@@ -110,6 +159,9 @@ export default function CitizenListWindow({
       onClick={onClose}
     >
       <div
+        ref={windowRef}
+        onClick={(e) => e.stopPropagation()}
+        onWheel={(e) => e.stopPropagation()}
         style={{
           background: GRAY_COLORS.bg,
           border: "3px solid",
@@ -122,12 +174,12 @@ export default function CitizenListWindow({
           display: "flex",
           flexDirection: "column",
           position: "relative",
+          transform: `translate(${position.x}px, ${position.y}px)`,
         }}
-        onClick={(e) => e.stopPropagation()}
-        onWheel={(e) => e.stopPropagation()}
       >
         {/* Title */}
         <div
+          onMouseDown={handleMouseDown}
           style={{
             fontSize: 24,
             fontWeight: "bold",
@@ -136,6 +188,8 @@ export default function CitizenListWindow({
             textAlign: "center",
             color: "#000",
             textShadow: "1px 1px 0 rgba(255,255,255,0.5)",
+            cursor: isDragging ? "grabbing" : "grab",
+            userSelect: "none",
           }}
         >
           👥 CITIZENS

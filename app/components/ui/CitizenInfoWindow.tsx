@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { getBuilding } from "@/app/data/buildings";
 import { CharacterType, MoodletType, Moodlet } from "@/app/components/game/types";
 
@@ -171,6 +171,52 @@ export default function CitizenInfoWindow({
 }: CitizenInfoWindowProps) {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState("");
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const windowRef = useRef<HTMLDivElement>(null);
+
+  // Reset position when window opens
+  useEffect(() => {
+    if (isVisible) {
+      setPosition({ x: 0, y: 0 });
+    }
+  }, [isVisible]);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (windowRef.current) {
+      const rect = windowRef.current.getBoundingClientRect();
+      setDragOffset({
+        x: e.clientX - rect.left - rect.width / 2,
+        y: e.clientY - rect.top - rect.height / 2,
+      });
+      setIsDragging(true);
+    }
+  };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (isDragging) {
+        setPosition({
+          x: e.clientX - window.innerWidth / 2 - dragOffset.x,
+          y: e.clientY - window.innerHeight / 2 - dragOffset.y,
+        });
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    if (isDragging) {
+      document.addEventListener("mousemove", handleMouseMove);
+      document.addEventListener("mouseup", handleMouseUp);
+      return () => {
+        document.removeEventListener("mousemove", handleMouseMove);
+        document.removeEventListener("mouseup", handleMouseUp);
+      };
+    }
+  }, [isDragging, dragOffset]);
 
   if (!isVisible || !citizen) return null;
 
@@ -205,11 +251,12 @@ export default function CitizenInfoWindow({
 
   return (
     <div
+      ref={windowRef}
       style={{
         position: "fixed",
         top: "50%",
         left: "50%",
-        transform: "translate(-50%, -50%)",
+        transform: `translate(calc(-50% + ${position.x}px), calc(-50% + ${position.y}px))`,
         zIndex: 1000,
         display: "flex",
         flexDirection: "column",
@@ -225,6 +272,7 @@ export default function CitizenInfoWindow({
     >
       {/* Title Bar */}
       <div
+        onMouseDown={handleMouseDown}
         style={{
           display: "flex",
           alignItems: "center",
@@ -234,6 +282,8 @@ export default function CitizenInfoWindow({
           color: "white",
           fontWeight: "bold",
           fontSize: 12,
+          cursor: isDragging ? "grabbing" : "grab",
+          userSelect: "none",
         }}
       >
         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
