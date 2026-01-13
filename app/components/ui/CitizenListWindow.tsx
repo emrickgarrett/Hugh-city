@@ -327,10 +327,10 @@ export default function CitizenListWindow({
                   >
                     {citizen.moodlet && (
                       <span
+                        title={citizen.moodletReason || citizen.moodlet}
                         style={{
                           fontSize: 16,
                           flexShrink: 0,
-                          title: citizen.moodletReason || citizen.moodlet,
                         }}
                       >
                         {getMoodletEmoji(citizen.moodlet)}
