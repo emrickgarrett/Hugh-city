@@ -121,6 +121,7 @@ export default function BankWindow({
       <div
         ref={windowRef}
         onClick={(e) => e.stopPropagation()}
+        onWheel={(e) => e.stopPropagation()}
         style={{
           background: GRAY_COLORS.bg,
           border: "3px solid",
@@ -134,8 +135,6 @@ export default function BankWindow({
           overflowY: "auto",
           position: "relative",
         }}
-        onClick={(e) => e.stopPropagation()}
-        onWheel={(e) => e.stopPropagation()}
       >
         {/* Title */}
         <div
