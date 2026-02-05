@@ -67,7 +67,12 @@ import TimeTracker from "../ui/TimeTracker";
 import BuildingInfoWindow, { BuildingStats } from "../ui/BuildingInfoWindow";
 import CitizenInfoWindow, { CitizenData } from "../ui/CitizenInfoWindow";
 import CitizenListWindow, { CitizenListItem } from "../ui/CitizenListWindow";
-import { getBuildingEconomics, ROAD_COSTS } from "@/app/data/buildings";
+import StatisticsWindow, {
+  PopulationDataPoint,
+  HappinessDataPoint,
+  BuildingCategoryCount,
+} from "../ui/StatisticsWindow";
+import { getBuildingEconomics, ROAD_COSTS, BUILDINGS } from "@/app/data/buildings";
 
 // Initialize empty grid
 const createEmptyGrid = (): GridCell[][] => {
@@ -183,6 +188,14 @@ export default function GameBoard() {
   const [selectedCitizenData, setSelectedCitizenData] = useState<CitizenData | null>(null);
   const [isCitizenInfoVisible, setIsCitizenInfoVisible] = useState(false);
   const [isCitizenListVisible, setIsCitizenListVisible] = useState(false);
+
+  // Statistics tracking
+  const [isStatisticsVisible, setIsStatisticsVisible] = useState(false);
+  const [populationHistory, setPopulationHistory] = useState<PopulationDataPoint[]>([]);
+  const [happinessHistory, setHappinessHistory] = useState<HappinessDataPoint[]>([]);
+  const [currentPopulationStats, setCurrentPopulationStats] = useState({ total: 0, housed: 0, homeless: 0 });
+  const [currentHappinessStats, setCurrentHappinessStats] = useState({ happy: 0, sad: 0, hungry: 0, angry: 0, depressed: 0 });
+  const [buildingCountsStats, setBuildingCountsStats] = useState<BuildingCategoryCount[]>([]);
 
   // Banks configuration
   const banks: Bank[] = [
@@ -536,6 +549,123 @@ export default function GameBoard() {
       phaserGameRef.current.setGameSpeed(gameSpeed);
     }
   }, [gameSpeed]);
+
+  // Ref to track current game time for statistics (avoids re-creating interval)
+  const gameTimeRef = useRef(gameTime);
+  useEffect(() => {
+    gameTimeRef.current = gameTime;
+  }, [gameTime]);
+
+  // Collect statistics periodically
+  useEffect(() => {
+    if (gameSpeed === GameSpeed.Paused) return;
+
+    const collectStats = () => {
+      // Safety check - don't collect if Phaser isn't ready
+      if (!phaserGameRef.current) return;
+
+      try {
+        const characters = phaserGameRef.current.getAllCitizens() || [];
+        const time = gameTimeRef.current;
+        const timestamp = time.year * 525600 + time.month * 43800 + time.day * 1440 + time.hour * 60 + time.minute;
+
+        // Population stats
+        const housed = characters.filter((c) => c.residenceX !== undefined).length;
+        const homeless = characters.filter((c) => c.residenceX === undefined).length;
+        const populationPoint = {
+          total: characters.length,
+          housed,
+          homeless,
+        };
+
+        setPopulationHistory((prev) => {
+          const newPoint: PopulationDataPoint = {
+            timestamp,
+            ...populationPoint,
+          };
+          return [...prev, newPoint].slice(-200);
+        });
+
+        // Update current population stats
+        setCurrentPopulationStats(populationPoint);
+
+        // Happiness stats
+        const happinessCount = {
+          happy: 0,
+          sad: 0,
+          hungry: 0,
+          angry: 0,
+          depressed: 0,
+        };
+
+        characters.forEach((c) => {
+          const moodlet = c.moodlet || "sad";
+          if (moodlet in happinessCount) {
+            happinessCount[moodlet as keyof typeof happinessCount]++;
+          }
+        });
+
+        setHappinessHistory((prev) => {
+          const newPoint: HappinessDataPoint = {
+            timestamp,
+            ...happinessCount,
+          };
+          return [...prev, newPoint].slice(-200);
+        });
+
+        // Update current happiness stats
+        setCurrentHappinessStats(happinessCount);
+
+      } catch (e) {
+        console.warn("Stats collection error:", e);
+      }
+    };
+
+    // Collect stats every 5 seconds
+    const statsInterval = setInterval(collectStats, 5000);
+
+    return () => clearInterval(statsInterval);
+  }, [gameSpeed]);
+
+  // Update building counts when grid or buildingStats change (less frequently than time updates)
+  useEffect(() => {
+    const categoryMap = new Map<string, { count: number; totalRevenue: number }>();
+    const categoryColors: Record<string, string> = {
+      residential: "#4ade80",
+      commercial: "#60a5fa",
+      civic: "#f472b6",
+      landmark: "#fbbf24",
+      props: "#a78bfa",
+      christmas: "#ef4444",
+    };
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        const cell = grid[y][x];
+        if (cell.type === TileType.Building && cell.buildingId && cell.isOrigin) {
+          const building = getBuilding(cell.buildingId);
+          if (building) {
+            const existing = categoryMap.get(building.category) || { count: 0, totalRevenue: 0 };
+            const buildingKey = `${x},${y}`;
+            const stats = buildingStats.get(buildingKey);
+            categoryMap.set(building.category, {
+              count: existing.count + 1,
+              totalRevenue: existing.totalRevenue + (stats?.totalRevenue || 0),
+            });
+          }
+        }
+      }
+    }
+
+    const counts = Array.from(categoryMap.entries()).map(([category, data]) => ({
+      category,
+      count: data.count,
+      totalRevenue: data.totalRevenue,
+      color: categoryColors[category] || "#888888",
+    }));
+
+    setBuildingCountsStats(counts);
+  }, [grid, buildingStats]);
 
   // Loan handling functions
   const handleTakeLoan = useCallback(
@@ -919,6 +1049,11 @@ export default function GameBoard() {
     setIsCitizenListVisible(false);
     handleCitizenClick(citizenId);
   }, [handleCitizenClick]);
+
+  // Memoized close handler for statistics window
+  const handleStatisticsClose = useCallback(() => {
+    setIsStatisticsVisible(false);
+  }, []);
 
   // Handle tile click (grid modifications)
   const handleTileClick = useCallback(
@@ -2357,6 +2492,48 @@ export default function GameBoard() {
         >
           🏦
         </button>
+        {/* Statistics button */}
+        <button
+          onClick={() => {
+            setIsStatisticsVisible(true);
+            playDoubleClickSound();
+          }}
+          title="Statistics"
+          style={{
+            background: "#5a5a5a",
+            border: "2px solid",
+            borderColor: "#7a7a7a #3a3a3a #3a3a3a #7a7a7a",
+            borderTop: "none",
+            padding: 0,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 0,
+            boxShadow: "1px 1px 0px #2a2a2a",
+            imageRendering: "pixelated",
+            transition: "filter 0.1s",
+            width: 48,
+            height: 48,
+            fontSize: 24,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.1)")}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+          onMouseDown={(e) => {
+            e.currentTarget.style.filter = "brightness(0.9)";
+            e.currentTarget.style.borderColor = "#3a3a3a #7a7a7a #7a7a7a #3a3a3a";
+            e.currentTarget.style.transform = "translate(1px, 1px)";
+            e.currentTarget.style.boxShadow = "inset 1px 1px 0px #2a2a2a";
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.filter = "brightness(1.1)";
+            e.currentTarget.style.borderColor = "#7a7a7a #3a3a3a #3a3a3a #7a7a7a";
+            e.currentTarget.style.transform = "none";
+            e.currentTarget.style.boxShadow = "1px 1px 0px #2a2a2a";
+          }}
+        >
+          📊
+        </button>
         <MoneyDisplay money={economy.money} />
         <MusicPlayer />
       </div>
@@ -2397,6 +2574,19 @@ export default function GameBoard() {
         citizens={getCitizenList()}
         onCitizenClick={handleCitizenListClick}
       />
+
+      {/* Statistics Window - only render when visible to avoid re-render issues */}
+      {isStatisticsVisible && (
+        <StatisticsWindow
+          isVisible={isStatisticsVisible}
+          onClose={handleStatisticsClose}
+          populationHistory={populationHistory}
+          happinessHistory={happinessHistory}
+          buildingCounts={buildingCountsStats}
+          currentPopulation={currentPopulationStats}
+          currentHappiness={currentHappinessStats}
+        />
+      )}
 
       {/* Main game area */}
       <div
