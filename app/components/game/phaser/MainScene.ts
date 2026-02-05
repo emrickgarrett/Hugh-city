@@ -624,36 +624,76 @@ export class MainScene extends Phaser.Scene {
   }
 
   // Calculate how much money a citizen should reserve for other needs
-  // This helps them budget to afford both food and entertainment
+  // Uses actual building costs to ensure citizens can afford both food and entertainment
   private calculateReservedMoney(
     char: CharacterWithResidence,
     forType: "food" | "entertainment"
   ): number {
-    const citizenMoney = char.money ?? 0;
     const framesSinceFood = ((char as any).framesSinceLastFood || 0);
     const needsFood = !char.ateToday || framesSinceFood >= 1200;
     const needsEntertainment = !char.entertainedToday;
-    
+
+    // Get actual cheapest options available
+    const { minFoodCost, minEntertainmentCost } = this.findCheapestOptions(char.x, char.y);
+
     let reserved = 0;
-    
-    // Estimate average costs: food ~30, entertainment ~35
-    const avgFoodCost = 30;
-    const avgEntertainmentCost = 35;
-    
+
     // Reserve money for needs they still have
     if (forType === "food") {
       // If buying food, reserve for entertainment if needed
       if (needsEntertainment) {
-        reserved = avgEntertainmentCost;
+        reserved = minEntertainmentCost;
       }
     } else if (forType === "entertainment") {
       // If buying entertainment, reserve for food if needed
       if (needsFood) {
-        reserved = avgFoodCost;
+        reserved = minFoodCost;
       }
     }
-    
+
     return reserved;
+  }
+
+  // Find the cheapest food and entertainment options available in the city
+  // Used for budget planning when citizens choose homes
+  private findCheapestOptions(charX: number, charY: number): { minFoodCost: number; minEntertainmentCost: number } {
+    let minFoodCost = 30; // Default fallback
+    let minEntertainmentCost = 35; // Default fallback
+
+    // Scan all buildings to find cheapest options
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        const cell = this.grid[y][x];
+        if (cell.type !== TileType.Building || !cell.buildingId || !cell.isOrigin) continue;
+
+        const building = getBuilding(cell.buildingId);
+        if (!building || building.category === "residential") continue;
+
+        const economics = getBuildingEconomics(building);
+        const cost = economics.incomePerInteraction;
+        if (cost === undefined) continue;
+
+        // Check if food or entertainment
+        const buildingName = building.name.toLowerCase();
+        const isFoodBusiness =
+          buildingName.includes("dunkin") ||
+          buildingName.includes("popeyes") ||
+          buildingName.includes("checkers") ||
+          buildingName.includes("martini") ||
+          buildingName.includes("bar") ||
+          buildingName.includes("restaurant") ||
+          buildingName.includes("cafe") ||
+          buildingName.includes("food");
+
+        if (isFoodBusiness) {
+          minFoodCost = Math.min(minFoodCost, cost);
+        } else {
+          minEntertainmentCost = Math.min(minEntertainmentCost, cost);
+        }
+      }
+    }
+
+    return { minFoodCost, minEntertainmentCost };
   }
 
   // Find nearby buildings that citizens can interact with
@@ -885,6 +925,7 @@ export class MainScene extends Phaser.Scene {
   }
 
   // Weighted pathfinding: sidewalks cost 1, asphalt costs 5, grass costs 10 (prefers sidewalks but allows crossing)
+  // Returns only the first direction (legacy method - use computeFullPath for cached paths)
   private findPathWeighted(
     startX: number,
     startY: number,
@@ -893,63 +934,92 @@ export class MainScene extends Phaser.Scene {
     maxSteps: number,
     allowGrass: boolean = false
   ): Direction | null {
-    // Priority queue: [priority, x, y, firstDir, cost]
-    const queue: Array<[number, number, number, Direction | null, number]> = [];
+    const fullPath = this.computeFullPath(startX, startY, targetX, targetY, maxSteps, allowGrass);
+    if (fullPath && fullPath.length > 0) {
+      return fullPath[0];
+    }
+    // No path found - fall back to greedy (with grass if allowed)
+    if (allowGrass) {
+      return this.moveTowardsTargetGreedyWithGrass(startX, startY, targetX, targetY);
+    }
+    return this.moveTowardsTargetGreedy(startX, startY, targetX, targetY);
+  }
+
+  // Compute the FULL path from start to target using A* with weighted costs
+  // Returns an array of directions to follow, or null if no path found
+  private computeFullPath(
+    startX: number,
+    startY: number,
+    targetX: number,
+    targetY: number,
+    maxSteps: number = 200,
+    allowGrass: boolean = false
+  ): Direction[] | null {
+    if (startX === targetX && startY === targetY) return [];
+
+    // Priority queue: [priority, x, y, cost]
+    const queue: Array<[number, number, number, number]> = [];
     const visited = new Set<string>();
-    const firstDirMap = new Map<string, Direction>(); // Track first direction to reach each tile
-    
+    const cameFrom = new Map<string, { x: number; y: number; dir: Direction }>(); // Track how we got to each tile
+
     // Heuristic: Manhattan distance
     const heuristic = (x: number, y: number) => Math.abs(x - targetX) + Math.abs(y - targetY);
-    
+
     // Start position
     const startKey = `${startX},${startY}`;
     visited.add(startKey);
-    queue.push([heuristic(startX, startY), startX, startY, null, 0]);
-    
+    queue.push([heuristic(startX, startY), startX, startY, 0]);
+
     while (queue.length > 0 && visited.size < maxSteps) {
       // Sort by priority (simple priority queue)
       queue.sort((a, b) => a[0] - b[0]);
-      const [priority, currentX, currentY, currentFirstDir, currentCost] = queue.shift()!;
-      const currentKey = `${currentX},${currentY}`;
-      
+      const [, currentX, currentY, currentCost] = queue.shift()!;
+
       // Check if we reached the target
       if (currentX === targetX && currentY === targetY) {
-        // Return the first direction we took to get here
-        return currentFirstDir || this.moveTowardsTargetGreedy(startX, startY, targetX, targetY);
+        // Reconstruct the path by walking backwards from target to start
+        const path: Direction[] = [];
+        let cx = currentX;
+        let cy = currentY;
+
+        while (cx !== startX || cy !== startY) {
+          const key = `${cx},${cy}`;
+          const from = cameFrom.get(key);
+          if (!from) break; // Should never happen
+          path.unshift(from.dir);
+          cx = from.x;
+          cy = from.y;
+        }
+
+        return path;
       }
-      
+
       // Explore neighbors
       for (const dir of allDirections) {
         const vec = directionVectors[dir];
         const nextX = currentX + vec.dx;
         const nextY = currentY + vec.dy;
         const nextKey = `${nextX},${nextY}`;
-        
+
         if (visited.has(nextKey)) continue;
         if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
         if (!this.isWalkable(nextX, nextY, allowGrass)) continue;
-        
+
         // Calculate cost: sidewalks = 1, asphalt = 5, grass = 10 (when allowed)
         const isSidewalk = this.isSidewalk(nextX, nextY);
         const isGrass = allowGrass && this.grid[nextY]?.[nextX]?.type === TileType.Grass;
         const stepCost = isSidewalk ? 1 : (isGrass ? 10 : 5);
         const newCost = currentCost + stepCost;
         const newPriority = newCost + heuristic(nextX, nextY);
-        
-        // Determine first direction: if we're at start, this is the first dir; otherwise use stored first dir
-        const firstDirection = currentX === startX && currentY === startY ? dir : (currentFirstDir || dir);
-        
+
         visited.add(nextKey);
-        firstDirMap.set(nextKey, firstDirection);
-        queue.push([newPriority, nextX, nextY, firstDirection, newCost]);
+        cameFrom.set(nextKey, { x: currentX, y: currentY, dir });
+        queue.push([newPriority, nextX, nextY, newCost]);
       }
     }
-    
-    // No path found - fall back to greedy (with grass if allowed)
-    if (allowGrass) {
-      return this.moveTowardsTargetGreedyWithGrass(startX, startY, targetX, targetY);
-    }
-    return this.moveTowardsTargetGreedy(startX, startY, targetX, targetY);
+
+    // No path found
+    return null;
   }
 
   // Simple BFS pathfinding
@@ -1641,23 +1711,46 @@ export class MainScene extends Phaser.Scene {
     }
 
     // If citizen has no residence and is wandering, look for a home they can AFFORD
+    // Strategy: Find the best home that leaves enough money for food + entertainment
     if (state === "wandering" && !char.residenceX) {
       const citizenMoney = char.money ?? 0;
-      const nearbyBuildings = this.findNearbyBuildings(x, y, 15);
-      
-      // Only consider residential buildings the citizen can afford
-      let residentialBuildings = nearbyBuildings.filter((b) => {
-        const building = getBuilding(b.buildingId);
-        if (!building || building.category !== "residential") return false;
-        
-        // Check if citizen can afford the rent
-        const economics = getBuildingEconomics(building);
-        const rent = economics.rentPerResident ?? 0;
-        return citizenMoney >= rent;
-      });
+      const dailyBudget = char.dailyBudget ?? MIN_DAILY_BUDGET;
+      const nearbyBuildings = this.findNearbyBuildings(x, y, 20); // Increased range for home search
 
-      // Shuffle the list so we don't always try the same building first
-      residentialBuildings = [...residentialBuildings].sort(() => Math.random() - 0.5);
+      // Find the cheapest food and entertainment options to calculate minimum needs
+      const { minFoodCost, minEntertainmentCost } = this.findCheapestOptions(x, y);
+      const minNeededForNeeds = minFoodCost + minEntertainmentCost;
+
+      // Only consider residential buildings the citizen can afford
+      // They need: rent + enough left over for food + entertainment
+      let residentialBuildings = nearbyBuildings
+        .filter((b) => {
+          const building = getBuilding(b.buildingId);
+          if (!building || building.category !== "residential") return false;
+
+          const economics = getBuildingEconomics(building);
+          const rent = economics.rentPerResident ?? 0;
+
+          // Can they afford rent AND still have enough for basic needs?
+          // They should have at least the rent cost after paying for needs
+          return citizenMoney >= rent && (citizenMoney - rent) >= minNeededForNeeds * 0.5;
+        })
+        .map((b) => {
+          const building = getBuilding(b.buildingId);
+          const economics = getBuildingEconomics(building!);
+          const rent = economics.rentPerResident ?? 0;
+          return { ...b, rent };
+        });
+
+      // Sort by rent (highest first that they can still afford) - maximize player income
+      // But also factor in distance - prefer closer homes
+      residentialBuildings.sort((a, b) => {
+        // Primary: prefer higher rent (gives player more money)
+        const rentDiff = b.rent - a.rent;
+        if (Math.abs(rentDiff) > 10) return rentDiff;
+        // Secondary: prefer closer buildings
+        return a.distance - b.distance;
+      });
 
       if (residentialBuildings.length > 0 && Math.random() < 0.02) {
         // 2% chance per frame to look for a home
@@ -1753,68 +1846,96 @@ export class MainScene extends Phaser.Scene {
 
       if (needsFood) {
         // Priority 2: Food - actively seek food businesses if hungry (highest priority)
+        // Citizens prefer the MOST EXPENSIVE option they can afford (maximizes player income)
         const nearbyBuildings = this.findNearbyBuildings(x, y, 20); // Increased range
         const reservedMoney = this.calculateReservedMoney(char, "food");
-        priorityBuildings = nearbyBuildings.filter((b) => {
-          const building = getBuilding(b.buildingId);
-          if (!building || building.category === "residential") return false;
-          const economics = getBuildingEconomics(building);
-          const cost = economics.incomePerInteraction ?? 0;
+        const foodBuildings = nearbyBuildings
+          .filter((b) => {
+            const building = getBuilding(b.buildingId);
+            if (!building || building.category === "residential") return false;
+            const economics = getBuildingEconomics(building);
+            const cost = economics.incomePerInteraction ?? 0;
 
-          // Only food businesses
-          const buildingName = building.name.toLowerCase();
-          const isFoodBusiness = buildingName.includes("dunkin") ||
-                                 buildingName.includes("popeyes") ||
-                                 buildingName.includes("checkers") ||
-                                 buildingName.includes("martini") ||
-                                 buildingName.includes("bar") ||
-                                 buildingName.includes("restaurant") ||
-                                 buildingName.includes("cafe") ||
-                                 buildingName.includes("food");
+            // Only food businesses
+            const buildingName = building.name.toLowerCase();
+            const isFoodBusiness =
+              buildingName.includes("dunkin") ||
+              buildingName.includes("popeyes") ||
+              buildingName.includes("checkers") ||
+              buildingName.includes("martini") ||
+              buildingName.includes("bar") ||
+              buildingName.includes("restaurant") ||
+              buildingName.includes("cafe") ||
+              buildingName.includes("food");
 
-          return (
-            isFoodBusiness &&
-            economics.incomePerInteraction !== undefined &&
-            citizenMoney >= cost + reservedMoney // Must have enough for this AND reserved money
-          );
+            return (
+              isFoodBusiness &&
+              economics.incomePerInteraction !== undefined &&
+              citizenMoney >= cost + reservedMoney // Must have enough for this AND reserved money
+            );
+          })
+          .map((b) => {
+            const building = getBuilding(b.buildingId);
+            const economics = getBuildingEconomics(building!);
+            return { ...b, cost: economics.incomePerInteraction ?? 0 };
+          });
+
+        // Sort by cost (highest first, to maximize player income), then by distance
+        foodBuildings.sort((a, b) => {
+          const costDiff = b.cost - a.cost;
+          if (Math.abs(costDiff) > 5) return costDiff; // Prefer more expensive
+          return a.distance - b.distance; // Then prefer closer
         });
-        // Sort by distance (nearest first)
-        priorityBuildings.sort((a, b) => a.distance - b.distance);
+        priorityBuildings = foodBuildings;
       }
       
       // If no food buildings found (or not hungry), seek entertainment if needed
+      // Citizens prefer the MOST EXPENSIVE option they can afford (maximizes player income)
       if (priorityBuildings.length === 0 && needsEntertainment) {
         // Priority 3: Entertainment - actively seek businesses if bored
         const nearbyBuildings = this.findNearbyBuildings(x, y, 20); // Increased range
         const reservedMoney = this.calculateReservedMoney(char, "entertainment");
-        priorityBuildings = nearbyBuildings.filter((b) => {
-          const building = getBuilding(b.buildingId);
-          if (!building || building.category === "residential") return false;
-          const economics = getBuildingEconomics(building);
-          const cost = economics.incomePerInteraction ?? 0;
-          
-          // Exclude food businesses (those are for food needs, not entertainment)
-          const buildingName = building.name.toLowerCase();
-          const isFoodBusiness = buildingName.includes("dunkin") ||
-                                 buildingName.includes("popeyes") ||
-                                 buildingName.includes("checkers") ||
-                                 buildingName.includes("martini") ||
-                                 buildingName.includes("bar") ||
-                                 buildingName.includes("restaurant") ||
-                                 buildingName.includes("cafe") ||
-                                 buildingName.includes("food");
-          
-          return (
-            !isFoodBusiness && // Exclude food businesses
-            (building.category === "commercial" ||
-              building.category === "civic" ||
-              building.category === "landmark") &&
-            economics.incomePerInteraction !== undefined &&
-            citizenMoney >= cost + reservedMoney // Must have enough for this AND reserved money
-          );
+        const entertainmentBuildings = nearbyBuildings
+          .filter((b) => {
+            const building = getBuilding(b.buildingId);
+            if (!building || building.category === "residential") return false;
+            const economics = getBuildingEconomics(building);
+            const cost = economics.incomePerInteraction ?? 0;
+
+            // Exclude food businesses (those are for food needs, not entertainment)
+            const buildingName = building.name.toLowerCase();
+            const isFoodBusiness =
+              buildingName.includes("dunkin") ||
+              buildingName.includes("popeyes") ||
+              buildingName.includes("checkers") ||
+              buildingName.includes("martini") ||
+              buildingName.includes("bar") ||
+              buildingName.includes("restaurant") ||
+              buildingName.includes("cafe") ||
+              buildingName.includes("food");
+
+            return (
+              !isFoodBusiness && // Exclude food businesses
+              (building.category === "commercial" ||
+                building.category === "civic" ||
+                building.category === "landmark") &&
+              economics.incomePerInteraction !== undefined &&
+              citizenMoney >= cost + reservedMoney // Must have enough for this AND reserved money
+            );
+          })
+          .map((b) => {
+            const building = getBuilding(b.buildingId);
+            const economics = getBuildingEconomics(building!);
+            return { ...b, cost: economics.incomePerInteraction ?? 0 };
+          });
+
+        // Sort by cost (highest first, to maximize player income), then by distance
+        entertainmentBuildings.sort((a, b) => {
+          const costDiff = b.cost - a.cost;
+          if (Math.abs(costDiff) > 5) return costDiff; // Prefer more expensive
+          return a.distance - b.distance; // Then prefer closer
         });
-        // Sort by distance (nearest first)
-        priorityBuildings.sort((a, b) => a.distance - b.distance);
+        priorityBuildings = entertainmentBuildings;
       }
       
       // If no priority buildings found and citizen has eaten but has extra money, 
@@ -2169,52 +2290,85 @@ export class MainScene extends Phaser.Scene {
         }
       }
     }
-    // If we have a destination, try to pathfind towards it
+    // If we have a destination, use cached path for smooth movement
     else if (currentDestination && (state === "heading_to_building" || state === "heading_home")) {
       this.debugLog(char.id, `Has destination: (${currentDestination.x}, ${currentDestination.y}), state: ${state}, nearCenter: ${nearCenter}, pos: (${tileX}, ${tileY})`);
-      
+
       // Check if current direction would lead into a wall
       const currentDirVec = directionVectors[direction];
       const aheadTileX = tileX + currentDirVec.dx;
       const aheadTileY = tileY + currentDirVec.dy;
       const isCurrentDirBlocked = !this.isWalkable(aheadTileX, aheadTileY);
-      
-      // Only do FULL pathfinding when near center of tile
-      // If just blocked (not near center), pick a locally valid direction without full recalc
-      if (nearCenter) {
-        // Full pathfinding at tile centers
-        const targetDir = this.moveTowardsTarget(char, currentDestination.x, currentDestination.y);
-        this.debugLog(char.id, `Pathfinding returned: ${targetDir}`);
-        
-        if (targetDir) {
-          // Check if the direction is actually walkable
-          const targetVec = directionVectors[targetDir];
-          const nextTileX = tileX + targetVec.dx;
-          const nextTileY = tileY + targetVec.dy;
-          const isNextWalkable = this.isWalkable(nextTileX, nextTileY);
-          this.debugLog(char.id, `Target dir ${targetDir} -> (${nextTileX}, ${nextTileY}), walkable: ${isNextWalkable}`);
-          
-          if (isNextWalkable) {
-            newDirection = targetDir;
+
+      // Check if we have a valid cached path to follow
+      const lastPathTile = char.lastPathTile;
+      const hasCachedPath = char.cachedPath &&
+        char.cachedPath.length > 0 &&
+        char.pathIndex !== undefined &&
+        char.pathIndex < char.cachedPath.length;
+
+      // Check if we moved to a new tile (need to advance path index)
+      const movedToNewTile = lastPathTile && (lastPathTile.x !== tileX || lastPathTile.y !== tileY);
+
+      if (nearCenter && hasCachedPath && movedToNewTile) {
+        // We have a cached path and moved to a new tile - advance to next step
+        const nextPathIndex = char.pathIndex! + 1;
+        const pathLength = char.cachedPath!.length;
+
+        if (nextPathIndex < pathLength) {
+          const nextDir = char.cachedPath![nextPathIndex];
+          const nextVec = directionVectors[nextDir];
+          const nextTileX = tileX + nextVec.dx;
+          const nextTileY = tileY + nextVec.dy;
+
+          // Verify the next step is still walkable (building might have been placed)
+          if (this.isWalkable(nextTileX, nextTileY)) {
+            newDirection = nextDir;
+            char = {
+              ...char,
+              pathIndex: nextPathIndex,
+              lastPathTile: { x: tileX, y: tileY },
+            };
+            this.debugLog(char.id, `Following path step ${nextPathIndex}/${pathLength}, dir: ${nextDir}`);
           } else {
-            // Direction not walkable, try greedy fallback
-            const greedyDir = this.moveTowardsTargetGreedy(tileX, tileY, currentDestination.x, currentDestination.y);
-            if (greedyDir && this.isWalkable(tileX + directionVectors[greedyDir].dx, tileY + directionVectors[greedyDir].dy)) {
-              newDirection = greedyDir;
-            } else {
-              // Can't move toward target, pick any valid direction to keep moving
-              const validDirs = this.getValidDirections(tileX, tileY);
-              if (validDirs.length > 0) {
-                newDirection = validDirs[0];
-              }
-            }
+            // Path is blocked - clear cache and recompute next frame
+            char = {
+              ...char,
+              cachedPath: undefined,
+              pathIndex: undefined,
+              lastPathTile: undefined,
+            };
+            this.debugLog(char.id, `Path blocked at step ${nextPathIndex}, will recompute`);
           }
         } else {
-          // Pathfinding returned null - try greedy or pick any valid direction
+          // Reached end of path
+          char = {
+            ...char,
+            cachedPath: undefined,
+            pathIndex: undefined,
+            lastPathTile: undefined,
+          };
+        }
+      } else if (nearCenter && !hasCachedPath) {
+        // No cached path - compute a new one
+        const fullPath = this.computeFullPath(tileX, tileY, currentDestination.x, currentDestination.y, 200, false);
+        if (fullPath && fullPath.length > 0) {
+          // Store the path in character state and take first step
+          char = {
+            ...char,
+            cachedPath: fullPath,
+            pathIndex: 0,
+            lastPathTile: { x: tileX, y: tileY },
+          };
+          newDirection = fullPath[0];
+          this.debugLog(char.id, `Computed new path with ${fullPath.length} steps, first dir: ${fullPath[0]}`);
+        } else {
+          // No path found - try greedy fallback
           const greedyDir = this.moveTowardsTargetGreedy(tileX, tileY, currentDestination.x, currentDestination.y);
           if (greedyDir && this.isWalkable(tileX + directionVectors[greedyDir].dx, tileY + directionVectors[greedyDir].dy)) {
             newDirection = greedyDir;
           } else {
+            // Can't move toward target, pick any valid direction
             const validDirs = this.getValidDirections(tileX, tileY);
             if (validDirs.length > 0) {
               newDirection = validDirs[0];
@@ -2222,15 +2376,17 @@ export class MainScene extends Phaser.Scene {
           }
         }
       } else if (isCurrentDirBlocked) {
-        // Not near center but direction is blocked - just pick a valid direction
-        // WITHOUT full pathfinding (to avoid oscillation)
-        // Use greedy to try to get closer to target
+        // Not near center but direction is blocked - clear cache and pick valid direction
+        char = {
+          ...char,
+          cachedPath: undefined,
+          pathIndex: undefined,
+          lastPathTile: undefined,
+        };
         const greedyDir = this.moveTowardsTargetGreedy(tileX, tileY, currentDestination.x, currentDestination.y);
         if (greedyDir && this.isWalkable(tileX + directionVectors[greedyDir].dx, tileY + directionVectors[greedyDir].dy)) {
           newDirection = greedyDir;
         } else {
-          // Greedy doesn't work, pick any valid direction except the opposite of current
-          // (to maintain momentum and avoid going back immediately)
           const validDirs = this.getValidDirections(tileX, tileY);
           const opposite = oppositeDirection[direction];
           const preferredDirs = validDirs.filter(d => d !== opposite);
