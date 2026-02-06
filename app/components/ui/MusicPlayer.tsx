@@ -109,7 +109,11 @@ function MenuButton({
 }
 
 // Music player component styled like top menu buttons
-export default function MusicPlayer() {
+interface MusicPlayerProps {
+  onTrackPlay?: (genre: string, trackIndex: number) => void;
+}
+
+export default function MusicPlayer({ onTrackPlay }: MusicPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [currentGenre, setCurrentGenre] = useState<MusicGenre>("chill");
@@ -118,6 +122,9 @@ export default function MusicPlayer() {
   const audioRef = useRef<HTMLAudioElement>(createAudioElement());
   // Track whether the user wants music playing (survives track changes)
   const wantsPlayingRef = useRef(false);
+  // Stable ref for track play callback (avoids useCallback dep issues)
+  const onTrackPlayRef = useRef(onTrackPlay);
+  onTrackPlayRef.current = onTrackPlay;
 
   const currentPlaylist = MUSIC_PLAYLISTS[currentGenre];
 
@@ -153,6 +160,7 @@ export default function MusicPlayer() {
           audio.play().then(() => {
             setIsPlaying(true);
             setIsLoading(false);
+            onTrackPlayRef.current?.(genre, trackIndex);
           }).catch(() => {
             setIsPlaying(false);
             setIsLoading(false);
@@ -213,6 +221,7 @@ export default function MusicPlayer() {
       if (audio.readyState >= 3) {
         audio.play().then(() => {
           setIsPlaying(true);
+          onTrackPlayRef.current?.(currentGenre, currentTrack);
         }).catch(() => {
           setIsPlaying(false);
         });
