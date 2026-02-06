@@ -538,12 +538,19 @@ export default function GameBoard() {
         phaserGameRef.current.resetDailyMoney();
 
         // Check for expired tourists every day
-        const touristsLeaving = phaserGameRef.current.removeTourists();
-        if (touristsLeaving > 0) {
+        const { leaving, becameHomeless } = phaserGameRef.current.removeTourists();
+        if (leaving > 0 || becameHomeless > 0) {
+          const parts: string[] = [];
+          if (leaving > 0) {
+            parts.push(`${leaving} tourist${leaving > 1 ? 's' : ''} couldn't find housing and ${leaving > 1 ? 'are' : 'is'} leaving the city`);
+          }
+          if (becameHomeless > 0) {
+            parts.push(`${becameHomeless} tourist${becameHomeless > 1 ? 's have' : ' has'} decided to stay as homeless citizen${becameHomeless > 1 ? 's' : ''}`);
+          }
           setModalState({
             isVisible: true,
-            title: "Tourists Leaving",
-            message: `${touristsLeaving} tourist${touristsLeaving > 1 ? 's' : ''} couldn't find housing and ${touristsLeaving > 1 ? 'are' : 'is'} leaving the city.`,
+            title: leaving > 0 && becameHomeless > 0 ? "Tourists Update" : leaving > 0 ? "Tourists Leaving" : "Tourists Staying",
+            message: parts.join('. ') + '.',
           });
         }
       }

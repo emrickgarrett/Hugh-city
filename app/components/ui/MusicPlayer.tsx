@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { playClickSound, playDoubleClickSound } from "@/app/utils/sounds";
 
 // Music genres and their tracks
@@ -32,92 +32,31 @@ const GRAY_COLORS = {
   shadow: "#2a2a2a",
 };
 
-// Music player component styled like top menu buttons
-export default function MusicPlayer() {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [currentGenre, setCurrentGenre] = useState<MusicGenre>("chill");
-  const [currentTrack, setCurrentTrack] = useState(0);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+const getTrackPath = (genre: MusicGenre, index: number) =>
+  `/audio/music/${genre}/${MUSIC_PLAYLISTS[genre][index]}`;
 
-  const currentPlaylist = MUSIC_PLAYLISTS[currentGenre];
-  const getTrackPath = (genre: MusicGenre, index: number) => 
-    `/audio/music/${genre}/${MUSIC_PLAYLISTS[genre][index]}`;
+// Helper to create the audio element (runs once during ref init, not in an effect)
+function createAudioElement(): HTMLAudioElement {
+  if (typeof window === "undefined") return null as unknown as HTMLAudioElement;
+  const audio = new Audio();
+  audio.volume = 0.3;
+  audio.preload = "auto";
+  return audio;
+}
 
-  const nextTrack = () => {
-    setCurrentTrack((prev) => (prev + 1) % currentPlaylist.length);
-    playClickSound();
-  };
-
-  const prevTrack = () => {
-    setCurrentTrack((prev) => (prev - 1 + currentPlaylist.length) % currentPlaylist.length);
-    playClickSound();
-  };
-
-  const togglePlay = () => {
-    if (!audioRef.current) return;
-
-    if (isPlaying) {
-      audioRef.current.pause();
-    } else {
-      audioRef.current.play().catch(() => {});
-    }
-    setIsPlaying(!isPlaying);
-    playClickSound();
-  };
-
-  useEffect(() => {
-    // Create audio element
-    if (!audioRef.current) {
-      audioRef.current = new Audio(getTrackPath(currentGenre, currentTrack));
-      audioRef.current.volume = 0.3;
-    }
-
-    // Update audio source when track or genre changes
-    audioRef.current.src = getTrackPath(currentGenre, currentTrack);
-    
-    // Auto-play next track when current ends
-    const handleEnded = () => {
-      setCurrentTrack((prev) => (prev + 1) % currentPlaylist.length);
-    };
-    
-    audioRef.current.addEventListener("ended", handleEnded);
-    
-    if (isPlaying) {
-      audioRef.current.play().catch(() => {});
-    }
-
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.removeEventListener("ended", handleEnded);
-      }
-    };
-  }, [currentTrack, currentGenre, currentPlaylist.length, isPlaying]);
-
-  const switchGenre = (genre: MusicGenre) => {
-    if (genre !== currentGenre) {
-      setCurrentGenre(genre);
-      setCurrentTrack(0); // Reset to first track of new genre
-      playDoubleClickSound();
-    }
-  };
-
-  // Get the icon path for current genre
-  const getGenreIcon = (genre: MusicGenre) => {
-    return genre === "chill" ? "/UI/ambient.png" : "/UI/jazz.png";
-  };
-
-  // Button component matching top menu style
-  const MenuButton = ({
-    onClick,
-    title,
-    imgSrc,
-    active = false,
-  }: {
-    onClick: () => void;
-    title: string;
-    imgSrc: string;
-    active?: boolean;
-  }) => (
+// Button component — defined OUTSIDE MusicPlayer to avoid remounting on every render
+function MenuButton({
+  onClick,
+  title,
+  imgSrc,
+  active = false,
+}: {
+  onClick: () => void;
+  title: string;
+  imgSrc: string;
+  active?: boolean;
+}) {
+  return (
     <button
       onClick={onClick}
       title={title}
@@ -125,8 +64,8 @@ export default function MusicPlayer() {
         background: active ? GRAY_COLORS.bgActive : GRAY_COLORS.bg,
         border: "2px solid",
         borderColor: active
-          ? `${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderDark}` // Inverted for active
-          : `${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderLight}`, // Normal
+          ? `${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderDark}`
+          : `${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderLight}`,
         padding: 0,
         cursor: "pointer",
         display: "flex",
@@ -140,7 +79,7 @@ export default function MusicPlayer() {
         transform: active ? "translate(1px, 1px)" : "none",
       }}
       onMouseEnter={(e) => !active && (e.currentTarget.style.filter = "brightness(1.1)")}
-      onMouseLeave={(e) => !active && (e.currentTarget.style.filter = "none")}
+      onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
       onMouseDown={(e) => {
         if (active) return;
         e.currentTarget.style.filter = "brightness(0.9)";
@@ -167,9 +106,151 @@ export default function MusicPlayer() {
       />
     </button>
   );
+}
+
+// Music player component styled like top menu buttons
+export default function MusicPlayer() {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [currentGenre, setCurrentGenre] = useState<MusicGenre>("chill");
+  const [currentTrack, setCurrentTrack] = useState(0);
+  // Audio element created eagerly (not in useEffect) so it's available immediately
+  const audioRef = useRef<HTMLAudioElement>(createAudioElement());
+  // Track whether the user wants music playing (survives track changes)
+  const wantsPlayingRef = useRef(false);
+
+  const currentPlaylist = MUSIC_PLAYLISTS[currentGenre];
+
+  // Cleanup audio on unmount
+  useEffect(() => {
+    const audio = audioRef.current;
+    return () => {
+      audio.pause();
+      audio.src = "";
+    };
+  }, []);
+
+  // Load and play a specific track
+  const loadTrack = useCallback((genre: MusicGenre, trackIndex: number, autoplay: boolean) => {
+    const audio = audioRef.current;
+
+    // Pause current playback
+    audio.pause();
+    setIsLoading(autoplay);
+    setIsPlaying(false);
+
+    // Set the new source
+    audio.src = getTrackPath(genre, trackIndex);
+    audio.load();
+
+    if (autoplay) {
+      // Wait for enough data to be buffered before playing
+      const onCanPlay = () => {
+        audio.removeEventListener("canplaythrough", onCanPlay);
+        audio.removeEventListener("error", onError);
+        // Only play if user still wants music (didn't click pause while loading)
+        if (wantsPlayingRef.current) {
+          audio.play().then(() => {
+            setIsPlaying(true);
+            setIsLoading(false);
+          }).catch(() => {
+            setIsPlaying(false);
+            setIsLoading(false);
+          });
+        } else {
+          setIsLoading(false);
+        }
+      };
+
+      const onError = () => {
+        audio.removeEventListener("canplaythrough", onCanPlay);
+        audio.removeEventListener("error", onError);
+        setIsPlaying(false);
+        setIsLoading(false);
+      };
+
+      audio.addEventListener("canplaythrough", onCanPlay, { once: true });
+      audio.addEventListener("error", onError, { once: true });
+    }
+  }, []);
+
+  // Handle track ended — advance to next
+  useEffect(() => {
+    const audio = audioRef.current;
+
+    const handleEnded = () => {
+      const nextIndex = (currentTrack + 1) % currentPlaylist.length;
+      setCurrentTrack(nextIndex);
+      loadTrack(currentGenre, nextIndex, true);
+    };
+
+    audio.addEventListener("ended", handleEnded);
+    return () => {
+      audio.removeEventListener("ended", handleEnded);
+    };
+  }, [currentTrack, currentGenre, currentPlaylist.length, loadTrack]);
+
+  // Pre-load initial track source (no autoplay)
+  useEffect(() => {
+    const audio = audioRef.current;
+    audio.src = getTrackPath("chill", 0);
+    audio.load();
+  }, []);
+
+  const togglePlay = useCallback(() => {
+    const audio = audioRef.current;
+
+    if (isPlaying || isLoading) {
+      // Stop playback
+      audio.pause();
+      wantsPlayingRef.current = false;
+      setIsPlaying(false);
+      setIsLoading(false);
+    } else {
+      // Start playback
+      wantsPlayingRef.current = true;
+      // If audio is already loaded (has buffered data), play immediately
+      if (audio.readyState >= 3) {
+        audio.play().then(() => {
+          setIsPlaying(true);
+        }).catch(() => {
+          setIsPlaying(false);
+        });
+      } else {
+        // Need to load/buffer first
+        loadTrack(currentGenre, currentTrack, true);
+      }
+    }
+    playClickSound();
+  }, [isPlaying, isLoading, currentGenre, currentTrack, loadTrack]);
+
+  const nextTrack = useCallback(() => {
+    const nextIndex = (currentTrack + 1) % currentPlaylist.length;
+    setCurrentTrack(nextIndex);
+    loadTrack(currentGenre, nextIndex, wantsPlayingRef.current);
+    playClickSound();
+  }, [currentTrack, currentPlaylist.length, currentGenre, loadTrack]);
+
+  const prevTrack = useCallback(() => {
+    const prevIndex = (currentTrack - 1 + currentPlaylist.length) % currentPlaylist.length;
+    setCurrentTrack(prevIndex);
+    loadTrack(currentGenre, prevIndex, wantsPlayingRef.current);
+    playClickSound();
+  }, [currentTrack, currentPlaylist.length, currentGenre, loadTrack]);
+
+  const switchGenre = useCallback((genre: MusicGenre) => {
+    if (genre !== currentGenre) {
+      setCurrentGenre(genre);
+      setCurrentTrack(0);
+      loadTrack(genre, 0, wantsPlayingRef.current);
+      playDoubleClickSound();
+    }
+  }, [currentGenre, loadTrack]);
+
+  const genreIcon = currentGenre === "chill" ? "/UI/ambient.png" : "/UI/jazz.png";
 
   return (
-    <div 
+    <div
       style={{
         display: "flex",
         alignItems: "center",
@@ -184,7 +265,7 @@ export default function MusicPlayer() {
         <MenuButton
           onClick={() => {}}
           title="Select Music Genre"
-          imgSrc={getGenreIcon(currentGenre)}
+          imgSrc={genreIcon}
         />
         <select
           value={currentGenre}
@@ -213,9 +294,9 @@ export default function MusicPlayer() {
       />
       <MenuButton
         onClick={togglePlay}
-        title={isPlaying ? "Pause" : "Play"}
-        imgSrc={isPlaying ? "/UI/pause.png" : "/UI/play.png"}
-        active={isPlaying}
+        title={isLoading ? "Loading..." : isPlaying ? "Pause" : "Play"}
+        imgSrc={isPlaying || isLoading ? "/UI/pause.png" : "/UI/play.png"}
+        active={isPlaying || isLoading}
       />
       <MenuButton
         onClick={nextTrack}
@@ -241,7 +322,7 @@ export default function MusicPlayer() {
           overflow: "hidden",
         }}
       >
-        {/* Inner inset panel - dark gray/black */}
+        {/* Inner inset panel */}
         <div
           style={{
             width: "100%",
@@ -251,7 +332,7 @@ export default function MusicPlayer() {
             alignItems: "center",
             overflow: "hidden",
             position: "relative",
-            background: "#000000", // Pure black background
+            background: "#000000",
             border: "1px solid",
             borderColor: `${GRAY_COLORS.shadow} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.shadow}`,
           }}
@@ -259,7 +340,7 @@ export default function MusicPlayer() {
           <div
             key={`${currentGenre}-${currentTrack}`}
             style={{
-              color: isPlaying ? "#00ff00" : "#00cc00", // Green text - bright when playing, darker when paused
+              color: isLoading ? "#888800" : isPlaying ? "#00ff00" : "#00cc00",
               fontSize: 18,
               fontWeight: "700",
               fontFamily: "var(--font-pixelify), monospace",
@@ -272,13 +353,13 @@ export default function MusicPlayer() {
               textTransform: "uppercase",
             }}
           >
-            {`${currentTrack + 1}. ${currentGenre}_${currentPlaylist[currentTrack]}`.toUpperCase()} • {`${currentTrack + 1}. ${currentGenre}_${currentPlaylist[currentTrack]}`.toUpperCase()}
+            {isLoading
+              ? `LOADING... ${currentTrack + 1}. ${currentGenre}_${currentPlaylist[currentTrack]}`.toUpperCase()
+              : `${currentTrack + 1}. ${currentGenre}_${currentPlaylist[currentTrack]}`.toUpperCase()
+            } • {`${currentTrack + 1}. ${currentGenre}_${currentPlaylist[currentTrack]}`.toUpperCase()}
           </div>
         </div>
       </div>
     </div>
   );
 }
-
-
-
