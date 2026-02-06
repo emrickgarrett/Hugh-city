@@ -72,6 +72,15 @@ import StatisticsWindow, {
   HappinessDataPoint,
   BuildingCategoryCount,
 } from "../ui/StatisticsWindow";
+import AchievementsWindow, { AchievementProgressData } from "../ui/AchievementsWindow";
+import AchievementToast from "../ui/AchievementToast";
+import { ACHIEVEMENTS, AchievementDefinition, ACHIEVEMENT_MAP } from "@/app/data/achievements";
+import {
+  unlockAchievement,
+  loadProgress,
+  saveProgress,
+  AchievementProgress,
+} from "@/app/utils/achievementStore";
 import { getBuildingEconomics, ROAD_COSTS } from "@/app/data/buildings";
 
 // Initialize empty grid
@@ -198,6 +207,21 @@ export default function GameBoard() {
   const [currentHappinessStats, setCurrentHappinessStats] = useState({ happy: 0, sad: 0, hungry: 0, angry: 0, depressed: 0 });
   const [buildingCountsStats, setBuildingCountsStats] = useState<BuildingCategoryCount[]>([]);
 
+  // Achievements state
+  const [isAchievementsVisible, setIsAchievementsVisible] = useState(false);
+  const [achievementToast, setAchievementToast] = useState<AchievementDefinition | null>(null);
+  const [currentSaveName, setCurrentSaveName] = useState("Unsaved");
+  const currentSaveNameRef = useRef("Unsaved");
+
+  // Achievement progress tracking refs (cumulative, survive across renders)
+  const totalBuildingsPlacedRef = useRef(0);
+  const totalDemolitionsRef = useRef(0);
+  const dailyRevenueRef = useRef(0);
+  const tracksPlayedRef = useRef<Set<string>>(new Set());
+  const homelessLeftRef = useRef(0);
+  const midnightWitnessedRef = useRef(false);
+  const prevAchievementDayRef = useRef(1);
+
   // Banks configuration
   const banks: Bank[] = [
     {
@@ -232,6 +256,18 @@ export default function GameBoard() {
     checkMobile();
     window.addEventListener("resize", checkMobile);
     return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
+  // Load persisted achievement progress on mount
+  useEffect(() => {
+    const progress = loadProgress();
+    if (progress) {
+      totalBuildingsPlacedRef.current = progress.totalBuildingsPlaced;
+      totalDemolitionsRef.current = progress.totalDemolitions;
+      homelessLeftRef.current = progress.homelessLeft;
+      tracksPlayedRef.current = new Set(progress.tracksPlayed);
+      midnightWitnessedRef.current = progress.midnightWitnessed;
+    }
   }, []);
 
   // Day/Night cycle visual computations
@@ -355,6 +391,8 @@ export default function GameBoard() {
     // Mark homeless citizens to start leaving at end of month
     const citizensLeaving = phaserGameRef.current.removeHomelessCitizens();
     if (citizensLeaving > 0) {
+      // Track for achievements
+      homelessLeftRef.current += citizensLeaving;
       setModalState({
         isVisible: true,
         title: "Citizens Leaving",
@@ -534,6 +572,9 @@ export default function GameBoard() {
   // Reset citizen daily money and check tourist expiry when day changes
   useEffect(() => {
     if (gameTime.day !== prevDayRef.current) {
+      // Reset daily revenue tracker for achievements
+      dailyRevenueRef.current = 0;
+
       if (phaserGameRef.current) {
         phaserGameRef.current.resetDailyMoney();
 
@@ -557,6 +598,13 @@ export default function GameBoard() {
     }
     prevDayRef.current = gameTime.day;
   }, [gameTime.day]);
+
+  // Check for midnight (Night Owl achievement)
+  useEffect(() => {
+    if (dayNightEnabled && gameTime.hour === 0) {
+      midnightWitnessedRef.current = true;
+    }
+  }, [dayNightEnabled, gameTime.hour]);
 
   // Time progression system
   useEffect(() => {
@@ -819,6 +867,27 @@ export default function GameBoard() {
           ...prev,
           money: prev.money + economics.incomePerInteraction!,
         }));
+
+        // Track daily revenue for achievements
+        dailyRevenueRef.current += economics.incomePerInteraction;
+
+        // Immediately check revenue achievements when threshold is crossed
+        const rev = dailyRevenueRef.current;
+        const revenueAchievements = [
+          { id: "pocket-change", threshold: 1000 },
+          { id: "business-boom", threshold: 10000 },
+          { id: "economic-powerhouse", threshold: 50000 },
+          { id: "tycoon-status", threshold: 100000 },
+        ];
+        for (const ra of revenueAchievements) {
+          if (rev >= ra.threshold) {
+            const result = unlockAchievement(ra.id, currentSaveNameRef.current);
+            if (result) {
+              const def = ACHIEVEMENT_MAP[ra.id];
+              if (def) setAchievementToast(def);
+            }
+          }
+        }
 
         // Update building stats
         setBuildingStats((prev) => {
@@ -1150,6 +1219,116 @@ export default function GameBoard() {
     setIsStatisticsVisible(false);
   }, []);
 
+  // Music track play callback for achievements
+  const handleTrackPlay = useCallback((genre: string, trackIndex: number) => {
+    tracksPlayedRef.current.add(`${genre}_${trackIndex}`);
+  }, []);
+
+  // Achievement checking interval (every 2 seconds)
+  useEffect(() => {
+    const checkInterval = setInterval(() => {
+      if (!phaserGameRef.current) return;
+
+      // Gather current game state for achievement checks
+      const citizens = phaserGameRef.current.getAllCitizens?.() ?? [];
+      const housedCount = citizens.filter(
+        (c: any) => c.residenceX !== undefined && !c.isTourist
+      ).length;
+      const carCount = phaserGameRef.current.getCarCount?.() ?? 0;
+
+      // Total tracks across both genres: 3 chill + 7 jazz = 10
+      const totalTracksCount = 10;
+      const tracksPlayedCount = tracksPlayedRef.current.size;
+
+      // Build progress data
+      const progressData: AchievementProgressData = {
+        housedCitizens: housedCount,
+        dailyRevenue: dailyRevenueRef.current,
+        totalBuildingsPlaced: totalBuildingsPlacedRef.current,
+        totalDemolitions: totalDemolitionsRef.current,
+        homelessLeft: homelessLeftRef.current,
+        carCount,
+        midnightWitnessed: midnightWitnessedRef.current,
+        tracksPlayedCount,
+      };
+
+      // Check each achievement
+      for (const achievement of ACHIEVEMENTS) {
+        let shouldUnlock = false;
+
+        switch (achievement.id) {
+          case "welcome-home":
+            shouldUnlock = housedCount >= 1;
+            break;
+          case "small-town-vibes":
+            shouldUnlock = housedCount >= 10;
+            break;
+          case "growing-community":
+            shouldUnlock = housedCount >= 50;
+            break;
+          case "metropolis-rising":
+            shouldUnlock = housedCount >= 100;
+            break;
+          case "pocket-change":
+            shouldUnlock = dailyRevenueRef.current >= 1000;
+            break;
+          case "business-boom":
+            shouldUnlock = dailyRevenueRef.current >= 10000;
+            break;
+          case "economic-powerhouse":
+            shouldUnlock = dailyRevenueRef.current >= 50000;
+            break;
+          case "tycoon-status":
+            shouldUnlock = dailyRevenueRef.current >= 100000;
+            break;
+          case "growing-pains":
+            shouldUnlock = homelessLeftRef.current > 0;
+            break;
+          case "first-foundation":
+            shouldUnlock = totalBuildingsPlacedRef.current >= 10;
+            break;
+          case "urban-planner":
+            shouldUnlock = totalBuildingsPlacedRef.current >= 25;
+            break;
+          case "master-architect":
+            shouldUnlock = totalBuildingsPlacedRef.current >= 100;
+            break;
+          case "night-owl":
+            shouldUnlock = midnightWitnessedRef.current;
+            break;
+          case "rush-hour":
+            shouldUnlock = carCount >= 5;
+            break;
+          case "dj-booth":
+            shouldUnlock = tracksPlayedCount >= totalTracksCount;
+            break;
+          case "demolition-derby":
+            shouldUnlock = totalDemolitionsRef.current >= 50;
+            break;
+        }
+
+        if (shouldUnlock) {
+          const result = unlockAchievement(achievement.id, currentSaveName);
+          if (result) {
+            // Newly unlocked! Show toast
+            setAchievementToast(achievement);
+          }
+        }
+      }
+
+      // Persist progress
+      saveProgress({
+        totalBuildingsPlaced: totalBuildingsPlacedRef.current,
+        totalDemolitions: totalDemolitionsRef.current,
+        homelessLeft: homelessLeftRef.current,
+        tracksPlayed: Array.from(tracksPlayedRef.current),
+        midnightWitnessed: midnightWitnessedRef.current,
+      });
+    }, 2000);
+
+    return () => clearInterval(checkInterval);
+  }, [currentSaveName]);
+
   // Handle tile click (grid modifications)
   const handleTileClick = useCallback(
     (x: number, y: number) => {
@@ -1405,6 +1584,8 @@ export default function GameBoard() {
               money: prev.money - economics.buildCost,
             }));
             playBuildSound();
+            // Track building placement for achievements
+            totalBuildingsPlacedRef.current += 1;
             // Trigger screen shake effect (like SimCity 4)
             if (phaserGameRef.current) {
               phaserGameRef.current.shakeScreen("y", 0.6, 150);
@@ -1477,6 +1658,8 @@ export default function GameBoard() {
                     // Building demolition refund (30%)
                     const economics = getBuildingEconomics(building);
                     demolitionRefund += Math.floor(economics.buildCost * 0.3);
+                    // Track demolition for achievements
+                    totalDemolitionsRef.current += 1;
                     // Get footprint based on stored orientation
                     const footprint = getBuildingFootprint(
                       building,
@@ -1720,6 +1903,8 @@ export default function GameBoard() {
               const economics = getBuildingEconomics(building);
               totalRefund += Math.floor(economics.buildCost * 0.3);
             }
+            // Track demolition for achievements
+            totalDemolitionsRef.current += 1;
           } else if ((cellType === TileType.Road || cellType === TileType.Asphalt) && hasRoadSegment(prevGrid, originX, originY)) {
             totalRefund += Math.floor(ROAD_COSTS.buildCost * 0.3);
           }
@@ -1967,6 +2152,7 @@ export default function GameBoard() {
               `hugh-city_save_${saveName}`,
               JSON.stringify(saveData)
             );
+            setCurrentSaveName(saveName); currentSaveNameRef.current = saveName;
             setModalState({
               isVisible: true,
               title: "Game Saved",
@@ -2012,6 +2198,7 @@ export default function GameBoard() {
               `hugh-city_save_${finalName}`,
               JSON.stringify(saveData)
             );
+            setCurrentSaveName(finalName); currentSaveNameRef.current = finalName;
             setModalState({
               isVisible: true,
               title: "Game Saved",
@@ -2031,8 +2218,11 @@ export default function GameBoard() {
     }
   }, [grid, zoom, visualSettings, dayNightEnabled]);
 
-  const handleLoadGame = useCallback((saveData: GameSaveData) => {
+  const handleLoadGame = useCallback((saveData: GameSaveData, saveName: string) => {
     try {
+      // Set current save name for achievements
+      setCurrentSaveName(saveName); currentSaveNameRef.current = saveName;
+
       // Restore grid
       setGrid(saveData.grid);
 
@@ -2672,8 +2862,50 @@ export default function GameBoard() {
         >
           📊
         </button>
+        {/* Achievements button */}
+        <button
+          onClick={() => {
+            setIsAchievementsVisible(true);
+            playDoubleClickSound();
+          }}
+          title="Achievements"
+          style={{
+            background: "#5a5a5a",
+            border: "2px solid",
+            borderColor: "#7a7a7a #3a3a3a #3a3a3a #7a7a7a",
+            borderTopWidth: 0,
+            padding: 0,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 0,
+            boxShadow: "1px 1px 0px #2a2a2a",
+            imageRendering: "pixelated",
+            transition: "filter 0.1s",
+            width: 48,
+            height: 48,
+            fontSize: 24,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.1)")}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+          onMouseDown={(e) => {
+            e.currentTarget.style.filter = "brightness(0.9)";
+            e.currentTarget.style.borderColor = "#3a3a3a #7a7a7a #7a7a7a #3a3a3a";
+            e.currentTarget.style.transform = "translate(1px, 1px)";
+            e.currentTarget.style.boxShadow = "inset 1px 1px 0px #2a2a2a";
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.filter = "brightness(1.1)";
+            e.currentTarget.style.borderColor = "#7a7a7a #3a3a3a #3a3a3a #7a7a7a";
+            e.currentTarget.style.transform = "none";
+            e.currentTarget.style.boxShadow = "1px 1px 0px #2a2a2a";
+          }}
+        >
+          🏆
+        </button>
         <MoneyDisplay money={economy.money} />
-        <MusicPlayer />
+        <MusicPlayer onTrackPlay={handleTrackPlay} />
       </div>
 
       {/* Bank Window */}
@@ -2725,6 +2957,30 @@ export default function GameBoard() {
           currentHappiness={currentHappinessStats}
         />
       )}
+
+      {/* Achievements Window */}
+      {isAchievementsVisible && (
+        <AchievementsWindow
+          isVisible={isAchievementsVisible}
+          onClose={() => setIsAchievementsVisible(false)}
+          progress={{
+            housedCitizens: currentPopulationStats.housed,
+            dailyRevenue: dailyRevenueRef.current,
+            totalBuildingsPlaced: totalBuildingsPlacedRef.current,
+            totalDemolitions: totalDemolitionsRef.current,
+            homelessLeft: homelessLeftRef.current,
+            carCount: phaserGameRef.current?.getCarCount?.() ?? 0,
+            midnightWitnessed: midnightWitnessedRef.current,
+            tracksPlayedCount: tracksPlayedRef.current.size,
+          }}
+        />
+      )}
+
+      {/* Achievement Toast */}
+      <AchievementToast
+        achievement={achievementToast}
+        onDismiss={() => setAchievementToast(null)}
+      />
 
       {/* Main game area */}
       <div

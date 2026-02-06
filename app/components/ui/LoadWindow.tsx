@@ -16,7 +16,7 @@ interface GameSaveData {
 interface LoadWindowProps {
   isVisible: boolean;
   onClose: () => void;
-  onLoad: (saveData: GameSaveData) => void;
+  onLoad: (saveData: GameSaveData, saveName: string) => void;
 }
 
 export default function LoadWindow({
@@ -86,8 +86,8 @@ export default function LoadWindow({
     setIsDragging(false);
   }, []);
 
-  const handleLoad = (saveData: GameSaveData) => {
-    onLoad(saveData);
+  const handleLoad = (saveData: GameSaveData, saveName: string) => {
+    onLoad(saveData, saveName);
     onClose();
     playDoubleClickSound();
   };
@@ -219,7 +219,7 @@ export default function LoadWindow({
                 <div style={{ display: "flex", gap: 4 }}>
                   <button
                     className="rct-button"
-                    onClick={() => handleLoad(save.data)}
+                    onClick={() => handleLoad(save.data, save.name)}
                     style={{
                       padding: "4px 8px",
                       fontSize: 12,
