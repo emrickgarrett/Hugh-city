@@ -42,6 +42,7 @@ export interface PhaserGameHandle {
   removeHomelessCitizens: () => number; // Returns number of citizens removed
   removeTourists: () => number; // Returns number of expired tourists leaving
   setGameTime: (time: GameTime) => void;
+  setDayNightState: (state: { skyColor: string; glowIntensity: number; phase: string }) => void;
 }
 
 interface PhaserGameProps {
@@ -235,6 +236,11 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
         setGameTime: (time: GameTime) => {
           if (sceneRef.current) {
             sceneRef.current.setGameTime(time);
+          }
+        },
+        setDayNightState: (state: { skyColor: string; glowIntensity: number; phase: string }) => {
+          if (sceneRef.current) {
+            sceneRef.current.setDayNightState(state);
           }
         },
       }),

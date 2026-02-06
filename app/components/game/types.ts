@@ -52,6 +52,7 @@ export interface VisualSettings {
   contrast: number; // 0.5 to 2.0
   saturation: number; // 0.5 to 2.0
   brightness: number; // 0.5 to 2.0
+  dayNightEnabled?: boolean; // When true, day/night cycle controls filter values
 }
 
 export enum CharacterType {

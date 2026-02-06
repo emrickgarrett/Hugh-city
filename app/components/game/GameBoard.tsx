@@ -1,12 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   TileType,
   ToolType,
   GridCell,
   Direction,
-  LightingType,
   VisualSettings,
   GRID_WIDTH,
   GRID_HEIGHT,
@@ -27,6 +26,7 @@ import {
   canPlaceRoadSegment,
 } from "./roadUtils";
 import { getBuilding, getBuildingFootprint } from "@/app/data/buildings";
+import { computeDayNightVisuals, DayNightVisuals } from "./dayNightCycle";
 import dynamic from "next/dynamic";
 import type { PhaserGameHandle } from "./phaser/PhaserGame";
 import {
@@ -154,6 +154,7 @@ export default function GameBoard() {
     saturation: 1.0,
     brightness: 1.0,
   });
+  const [dayNightEnabled, setDayNightEnabled] = useState(true);
 
   // Mobile warning state
   const [isMobile, setIsMobile] = useState(false);
@@ -232,6 +233,25 @@ export default function GameBoard() {
     window.addEventListener("resize", checkMobile);
     return () => window.removeEventListener("resize", checkMobile);
   }, []);
+
+  // Day/Night cycle visual computations
+  const dayNightVisuals = useMemo<DayNightVisuals | null>(() => {
+    if (!dayNightEnabled) return null;
+    return computeDayNightVisuals(gameTime.hour, gameTime.minute);
+  }, [dayNightEnabled, gameTime.hour, gameTime.minute]);
+
+  // Effective visuals: day/night cycle overrides manual settings when enabled
+  const effectiveVisuals = useMemo<VisualSettings>(() => {
+    if (dayNightVisuals) {
+      return {
+        blueness: dayNightVisuals.blueness,
+        contrast: dayNightVisuals.contrast,
+        saturation: dayNightVisuals.saturation,
+        brightness: dayNightVisuals.brightness,
+      };
+    }
+    return visualSettings;
+  }, [dayNightVisuals, visualSettings]);
 
   // Ref to Phaser game for spawning entities
   const phaserGameRef = useRef<PhaserGameHandle>(null);
@@ -490,6 +510,26 @@ export default function GameBoard() {
       phaserGameRef.current.setGameTime(gameTime);
     }
   }, [gameTime.day, gameTime.month, gameTime.year]);
+
+  // Sync day/night visual state to Phaser (sky color + glow intensity)
+  useEffect(() => {
+    if (phaserGameRef.current) {
+      if (dayNightVisuals) {
+        phaserGameRef.current.setDayNightState({
+          skyColor: dayNightVisuals.skyColor,
+          glowIntensity: dayNightVisuals.glowIntensity,
+          phase: dayNightVisuals.phase,
+        });
+      } else {
+        // Day/night disabled — reset to default sky and turn off glows
+        phaserGameRef.current.setDayNightState({
+          skyColor: "#3d5560",
+          glowIntensity: 0,
+          phase: "day",
+        });
+      }
+    }
+  }, [dayNightVisuals]);
 
   // Reset citizen daily money and check tourist expiry when day changes
   useEffect(() => {
@@ -1874,6 +1914,7 @@ export default function GameBoard() {
     carCount: number;
     zoom?: number;
     visualSettings?: VisualSettings;
+    dayNightEnabled?: boolean;
     timestamp: number;
     economy?: GameEconomy;
     gameTime?: GameTime;
@@ -1907,6 +1948,7 @@ export default function GameBoard() {
             carCount,
             zoom,
             visualSettings,
+            dayNightEnabled,
             timestamp: Date.now(),
             economy,
             gameTime,
@@ -1951,6 +1993,7 @@ export default function GameBoard() {
             carCount,
             zoom,
             visualSettings,
+            dayNightEnabled,
             timestamp: Date.now(),
             economy,
             gameTime,
@@ -1979,7 +2022,7 @@ export default function GameBoard() {
         },
       });
     }
-  }, [grid, zoom, visualSettings]);
+  }, [grid, zoom, visualSettings, dayNightEnabled]);
 
   const handleLoadGame = useCallback((saveData: GameSaveData) => {
     try {
@@ -1996,6 +2039,9 @@ export default function GameBoard() {
       }
       if (saveData.visualSettings) {
         setVisualSettings(saveData.visualSettings);
+      }
+      if (saveData.dayNightEnabled !== undefined) {
+        setDayNightEnabled(saveData.dayNightEnabled);
       }
       if (saveData.economy) {
         setEconomy(saveData.economy);
@@ -2108,7 +2154,7 @@ export default function GameBoard() {
             alignItems: "center",
             justifyContent: "center",
             borderRadius: 0,
-            borderTop: "none",
+            borderTopWidth: 0,
             boxShadow: "1px 1px 0px #505050",
             imageRendering: "pixelated",
             transition: "filter 0.1s",
@@ -2162,7 +2208,7 @@ export default function GameBoard() {
             alignItems: "center",
             justifyContent: "center",
             borderRadius: 0,
-            borderTop: "none",
+            borderTopWidth: 0,
             boxShadow: "1px 1px 0px #505050",
             imageRendering: "pixelated",
             transition: "filter 0.1s",
@@ -2215,7 +2261,7 @@ export default function GameBoard() {
             alignItems: "center",
             justifyContent: "center",
             borderRadius: 0, // No rounded corners
-            borderTop: "none", // Remove top border to attach to edge
+            borderTopWidth: 0, // Remove top border to attach to edge
             boxShadow: "1px 1px 0px #244B7A",
             imageRendering: "pixelated",
             transition: "filter 0.1s",
@@ -2268,7 +2314,7 @@ export default function GameBoard() {
             alignItems: "center",
             justifyContent: "center",
             borderRadius: 0, // No rounded corners
-            borderTop: "none", // Remove top border
+            borderTopWidth: 0, // Remove top border
             boxShadow: "1px 1px 0px #244B7A",
             imageRendering: "pixelated",
             transition: "filter 0.1s",
@@ -2306,7 +2352,7 @@ export default function GameBoard() {
         </button>
       </div>
 
-      {/* Top Right - Build and Eraser buttons */}
+      {/* Top Right - Unified toolbar: TimeTracker + Build + Eraser */}
       <div
         style={{
           position: "absolute",
@@ -2315,9 +2361,17 @@ export default function GameBoard() {
           zIndex: 1000,
           display: "flex",
           gap: 0,
+          alignItems: "flex-start",
         }}
         onWheel={(e) => e.stopPropagation()}
       >
+        <TimeTracker
+          gameTime={gameTime}
+          gameSpeed={gameSpeed}
+          onSpeedChange={setGameSpeed}
+          dayNightEnabled={dayNightEnabled}
+          onDayNightToggle={setDayNightEnabled}
+        />
         <button
           onClick={() => {
             const willOpen = !isToolWindowVisible;
@@ -2353,7 +2407,7 @@ export default function GameBoard() {
             alignItems: "center",
             justifyContent: "center",
             borderRadius: 0,
-            borderTop: "none",
+            borderTopWidth: 0,
             boxShadow: isToolWindowVisible
               ? "inset 1px 1px 0px #2a0a0a"
               : "1px 1px 0px #2a0a0a",
@@ -2426,7 +2480,7 @@ export default function GameBoard() {
             alignItems: "center",
             justifyContent: "center",
             borderRadius: 0,
-            borderTop: "none",
+            borderTopWidth: 0,
             boxShadow:
               selectedTool === ToolType.Eraser
                 ? "inset 1px 1px 0px #2a0a0a"
@@ -2473,14 +2527,6 @@ export default function GameBoard() {
         </button>
       </div>
 
-      {/* Top Right - Time Tracker (to the left of build menu) */}
-      <TimeTracker
-        gameTime={gameTime}
-        gameSpeed={gameSpeed}
-        onSpeedChange={setGameSpeed}
-        positionRight={98} // Position to the left of build menu (48px build + 48px eraser + 2px margin)
-      />
-
       {/* Bottom right - Money display and Music player */}
       <div
         style={{
@@ -2504,7 +2550,7 @@ export default function GameBoard() {
             background: "#5a5a5a",
             border: "2px solid",
             borderColor: "#7a7a7a #3a3a3a #3a3a3a #7a7a7a",
-            borderTop: "none",
+            borderTopWidth: 0,
             padding: 0,
             cursor: "pointer",
             display: "flex",
@@ -2546,7 +2592,7 @@ export default function GameBoard() {
             background: "#5a5a5a",
             border: "2px solid",
             borderColor: "#7a7a7a #3a3a3a #3a3a3a #7a7a7a",
-            borderTop: "none",
+            borderTopWidth: 0,
             padding: 0,
             cursor: "pointer",
             display: "flex",
@@ -2588,7 +2634,7 @@ export default function GameBoard() {
             background: "#5a5a5a",
             border: "2px solid",
             borderColor: "#7a7a7a #3a3a3a #3a3a3a #7a7a7a",
-            borderTop: "none",
+            borderTopWidth: 0,
             padding: 0,
             cursor: "pointer",
             display: "flex",
@@ -2695,10 +2741,10 @@ export default function GameBoard() {
             width: "100%",
             height: "100%",
             filter: `
-              hue-rotate(${visualSettings.blueness}deg)
-              contrast(${visualSettings.contrast})
-              saturate(${visualSettings.saturation})
-              brightness(${visualSettings.brightness})
+              hue-rotate(${effectiveVisuals.blueness}deg)
+              contrast(${effectiveVisuals.contrast})
+              saturate(${effectiveVisuals.saturation})
+              brightness(${effectiveVisuals.brightness})
             `,
           }}
         >
