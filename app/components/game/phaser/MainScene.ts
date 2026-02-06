@@ -1344,13 +1344,15 @@ export class MainScene extends Phaser.Scene {
   }
 
   // Remove tourists whose 7-day grace period has expired without finding housing
-  // Returns number of tourists leaving
-  removeTourists(): number {
-    if (!this.currentGameTime) return 0;
+  // Some tourists (25% chance) stay as homeless citizens instead of leaving
+  removeTourists(): { leaving: number; becameHomeless: number } {
+    if (!this.currentGameTime) return { leaving: 0, becameHomeless: 0 };
 
-    let count = 0;
+    let leaving = 0;
+    let becameHomeless = 0;
     const currentDay = this.currentGameTime.day;
     const currentMonth = this.currentGameTime.month;
+    const STAY_CHANCE = 0.25;
 
     for (const citizen of this.characters) {
       if (!citizen.isTourist || citizen.residenceX !== undefined || citizen.state === "leaving_city") continue;
@@ -1369,23 +1371,31 @@ export class MainScene extends Phaser.Scene {
       }
 
       if (daysSinceArrival >= 7) {
-        // Grace period expired - tourist becomes a regular homeless citizen who will leave
+        // Grace period expired - no longer a tourist
         citizen.isTourist = false;
-        citizen.willLeaveAtMonthEnd = true;
 
-        const edgeTarget = this.findClosestMapEdge(citizen.x, citizen.y);
-        if (edgeTarget) {
-          citizen.state = "leaving_city";
-          citizen.currentDestination = {
-            x: edgeTarget.x,
-            y: edgeTarget.y,
-          };
-          count++;
+        if (Math.random() < STAY_CHANCE) {
+          // Tourist decides to stay as a homeless citizen
+          citizen.willLeaveAtMonthEnd = true;
+          citizen.homelessSince = currentMonth;
+          becameHomeless++;
+        } else {
+          // Tourist leaves the city
+          citizen.willLeaveAtMonthEnd = true;
+          const edgeTarget = this.findClosestMapEdge(citizen.x, citizen.y);
+          if (edgeTarget) {
+            citizen.state = "leaving_city";
+            citizen.currentDestination = {
+              x: edgeTarget.x,
+              y: edgeTarget.y,
+            };
+            leaving++;
+          }
         }
       }
     }
 
-    return count;
+    return { leaving, becameHomeless };
   }
 
   private findClosestMapEdge(charX: number, charY: number): { x: number; y: number } | null {
