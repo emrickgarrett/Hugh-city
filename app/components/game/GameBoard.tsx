@@ -594,9 +594,43 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
     }
   }, [dayNightVisuals]);
 
+  // Auto-save silently (no modal, no sound) — saved via ref to avoid stale closures
+  const autoSaveRef = useRef<() => void>(() => {});
+  autoSaveRef.current = () => {
+    const characterCount = phaserGameRef.current?.getCharacterCount() ?? 0;
+    const carCount = phaserGameRef.current?.getCarCount() ?? 0;
+    const saveData: GameSaveData = {
+      grid,
+      characterCount,
+      carCount,
+      zoom,
+      visualSettings,
+      dayNightEnabled,
+      timestamp: Date.now(),
+      economy,
+      gameTime,
+      gameSpeed,
+      cityName,
+    };
+    try {
+      localStorage.setItem(
+        `hugh-city_save_${cityName}`,
+        JSON.stringify(saveData)
+      );
+      console.log(`[Auto-Save] City "${cityName}" saved (Day ${gameTime.day}, Month ${gameTime.month})`);
+    } catch (error) {
+      console.error("[Auto-Save] Failed:", error);
+    }
+  };
+
   // Reset citizen daily money and check tourist expiry when day changes
   useEffect(() => {
     if (gameTime.day !== prevDayRef.current) {
+      // Auto-save at the end of every in-game week (day 7, 14, 21, 28)
+      if (gameTime.day % 7 === 0) {
+        autoSaveRef.current();
+      }
+
       // Reset daily revenue tracker for achievements
       dailyRevenueRef.current = 0;
 
