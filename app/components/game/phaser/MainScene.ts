@@ -15,6 +15,7 @@ import {
   CHARACTER_SPEED,
   CAR_SPEED,
   GameSpeed,
+  GameTime,
   CharacterWithResidence,
   MoodletType,
 } from "../types";
@@ -216,6 +217,9 @@ export class MainScene extends Phaser.Scene {
 
   // Game speed multiplier
   private gameSpeed: GameSpeed = GameSpeed.Normal;
+
+  // Current game time (synced from React)
+  private currentGameTime: GameTime | null = null;
 
   constructor() {
     super({ key: "MainScene" });
@@ -1459,6 +1463,7 @@ export class MainScene extends Phaser.Scene {
               state: "wandering", // Reset state after moving in
               currentDestination: undefined,
               lastFailedBuildingKey: undefined, // Clear failed building tracker
+              isTourist: false, // No longer a tourist - they're a resident now!
               willLeaveAtMonthEnd: false, // Clear leaving flag - they found a home!
               homelessSince: undefined, // Clear homeless tracking
             };
@@ -1574,8 +1579,12 @@ export class MainScene extends Phaser.Scene {
     const hoursSinceFood = Math.floor((framesSinceFood / 3600) * 24); // Convert frames to hours
     const needsFood = !ateToday || framesSinceFood >= 1200; // 8 hours worth of frames
     
-    // Priority 1: Homeless → Depressed
+    // Priority 1: Homeless → Depressed (but tourists get a grace period)
     if (!hasHome) {
+      if (char.isTourist) {
+        // Tourists are exploring, not depressed about being homeless
+        return { moodlet: "happy", reason: "I'm a tourist exploring the city! Looking for a place to live." };
+      }
       // Check if they've been homeless for a while (will leave at month end)
       if (char.homelessSince === undefined) {
         return { moodlet: "depressed", reason: "I'm homeless and searching for a place to live..." };
@@ -2504,8 +2513,8 @@ export class MainScene extends Phaser.Scene {
       moodlet: newMoodlet,
       moodletReason: moodletReason,
       previousMoodlet: previousMoodlet,
-      // Track homeless status - set willLeaveAtMonthEnd if homeless
-      willLeaveAtMonthEnd: char.residenceX ? false : true, // All homeless citizens will leave at month end
+      // Track homeless status - set willLeaveAtMonthEnd if homeless (but not tourists)
+      willLeaveAtMonthEnd: char.residenceX ? false : (char.isTourist ? false : true),
       homelessSince: char.residenceX ? undefined : (char.homelessSince ?? undefined),
     } as CharacterWithResidence & { 
       oscillationCounter?: number; 
@@ -3479,6 +3488,10 @@ export class MainScene extends Phaser.Scene {
       moodlet: null,
       moodletReason: "",
       previousMoodlet: null,
+      // New citizens arrive as tourists with a 7-day grace period
+      isTourist: true,
+      touristArrivalDay: this.currentGameTime?.day ?? 1,
+      touristArrivalMonth: this.currentGameTime?.month ?? 1,
       willLeaveAtMonthEnd: false,
       homelessSince: undefined,
     };
@@ -3688,7 +3701,52 @@ export class MainScene extends Phaser.Scene {
     
     return count;
   }
-  
+
+  // Remove tourists whose 7-day grace period has expired without finding housing
+  // Returns number of tourists leaving
+  removeTourists(): number {
+    if (!this.currentGameTime) return 0;
+
+    let count = 0;
+    const currentDay = this.currentGameTime.day;
+    const currentMonth = this.currentGameTime.month;
+
+    for (const citizen of this.characters) {
+      if (!citizen.isTourist || citizen.residenceX !== undefined || citizen.state === "leaving_city") continue;
+
+      // Calculate days since arrival
+      const arrivalDay = citizen.touristArrivalDay ?? 1;
+      const arrivalMonth = citizen.touristArrivalMonth ?? currentMonth;
+      let daysSinceArrival: number;
+
+      if (currentMonth === arrivalMonth) {
+        daysSinceArrival = currentDay - arrivalDay;
+      } else {
+        // Crossed month boundary - calculate days from arrival to end of that month + days in current month
+        const daysInArrivalMonth = new Date(this.currentGameTime.year, arrivalMonth, 0).getDate();
+        daysSinceArrival = (daysInArrivalMonth - arrivalDay) + currentDay;
+      }
+
+      if (daysSinceArrival >= 7) {
+        // Grace period expired - tourist becomes a regular homeless citizen who will leave
+        citizen.isTourist = false;
+        citizen.willLeaveAtMonthEnd = true;
+
+        const edgeTarget = this.findClosestMapEdge(citizen.x, citizen.y);
+        if (edgeTarget) {
+          citizen.state = "leaving_city";
+          citizen.currentDestination = {
+            x: edgeTarget.x,
+            y: edgeTarget.y,
+          };
+          count++;
+        }
+      }
+    }
+
+    return count;
+  }
+
   // Find the closest walkable tile on the map edge
   private findClosestMapEdge(charX: number, charY: number): { x: number; y: number } | null {
     const tileX = Math.floor(charX);
@@ -3959,6 +4017,10 @@ export class MainScene extends Phaser.Scene {
 
   setGameSpeed(speed: GameSpeed): void {
     this.gameSpeed = speed;
+  }
+
+  setGameTime(time: GameTime): void {
+    this.currentGameTime = time;
   }
 
   getBuildingResidentCount(originX: number, originY: number): number {

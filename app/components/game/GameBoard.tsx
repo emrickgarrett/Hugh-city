@@ -72,7 +72,7 @@ import StatisticsWindow, {
   HappinessDataPoint,
   BuildingCategoryCount,
 } from "../ui/StatisticsWindow";
-import { getBuildingEconomics, ROAD_COSTS, BUILDINGS } from "@/app/data/buildings";
+import { getBuildingEconomics, ROAD_COSTS } from "@/app/data/buildings";
 
 // Initialize empty grid
 const createEmptyGrid = (): GridCell[][] => {
@@ -193,7 +193,7 @@ export default function GameBoard() {
   const [isStatisticsVisible, setIsStatisticsVisible] = useState(false);
   const [populationHistory, setPopulationHistory] = useState<PopulationDataPoint[]>([]);
   const [happinessHistory, setHappinessHistory] = useState<HappinessDataPoint[]>([]);
-  const [currentPopulationStats, setCurrentPopulationStats] = useState({ total: 0, housed: 0, homeless: 0 });
+  const [currentPopulationStats, setCurrentPopulationStats] = useState({ total: 0, housed: 0, homeless: 0, tourists: 0 });
   const [currentHappinessStats, setCurrentHappinessStats] = useState({ happy: 0, sad: 0, hungry: 0, angry: 0, depressed: 0 });
   const [buildingCountsStats, setBuildingCountsStats] = useState<BuildingCategoryCount[]>([]);
 
@@ -484,11 +484,28 @@ export default function GameBoard() {
     prevMonthRef.current = gameTime.month;
   }, [gameTime.month, processMonthlyPayments]);
 
-  // Reset citizen daily money when day changes
+  // Sync game time to Phaser (runs frequently to keep Phaser in sync)
+  useEffect(() => {
+    if (phaserGameRef.current) {
+      phaserGameRef.current.setGameTime(gameTime);
+    }
+  }, [gameTime.day, gameTime.month, gameTime.year]);
+
+  // Reset citizen daily money and check tourist expiry when day changes
   useEffect(() => {
     if (gameTime.day !== prevDayRef.current) {
       if (phaserGameRef.current) {
         phaserGameRef.current.resetDailyMoney();
+
+        // Check for expired tourists every day
+        const touristsLeaving = phaserGameRef.current.removeTourists();
+        if (touristsLeaving > 0) {
+          setModalState({
+            isVisible: true,
+            title: "Tourists Leaving",
+            message: `${touristsLeaving} tourist${touristsLeaving > 1 ? 's' : ''} couldn't find housing and ${touristsLeaving > 1 ? 'are' : 'is'} leaving the city.`,
+          });
+        }
       }
     }
     prevDayRef.current = gameTime.day;
@@ -561,7 +578,6 @@ export default function GameBoard() {
     if (gameSpeed === GameSpeed.Paused) return;
 
     const collectStats = () => {
-      // Safety check - don't collect if Phaser isn't ready
       if (!phaserGameRef.current) return;
 
       try {
@@ -571,11 +587,13 @@ export default function GameBoard() {
 
         // Population stats
         const housed = characters.filter((c) => c.residenceX !== undefined).length;
-        const homeless = characters.filter((c) => c.residenceX === undefined).length;
+        const tourists = characters.filter((c) => c.isTourist && c.residenceX === undefined).length;
+        const homeless = characters.filter((c) => c.residenceX === undefined && !c.isTourist).length;
         const populationPoint = {
           total: characters.length,
           housed,
           homeless,
+          tourists,
         };
 
         setPopulationHistory((prev) => {
@@ -586,7 +604,6 @@ export default function GameBoard() {
           return [...prev, newPoint].slice(-200);
         });
 
-        // Update current population stats
         setCurrentPopulationStats(populationPoint);
 
         // Happiness stats
@@ -613,21 +630,17 @@ export default function GameBoard() {
           return [...prev, newPoint].slice(-200);
         });
 
-        // Update current happiness stats
         setCurrentHappinessStats(happinessCount);
-
       } catch (e) {
         console.warn("Stats collection error:", e);
       }
     };
 
-    // Collect stats every 5 seconds
     const statsInterval = setInterval(collectStats, 5000);
-
     return () => clearInterval(statsInterval);
   }, [gameSpeed]);
 
-  // Update building counts when grid or buildingStats change (less frequently than time updates)
+  // Update building counts when grid or buildingStats change
   useEffect(() => {
     const categoryMap = new Map<string, { count: number; totalRevenue: number }>();
     const categoryColors: Record<string, string> = {
@@ -885,6 +898,21 @@ export default function GameBoard() {
         }
       }
 
+      // Calculate tourist days remaining
+      let touristDaysRemaining: number | undefined;
+      if (citizen.isTourist && citizen.touristArrivalDay !== undefined) {
+        const arrivalDay = citizen.touristArrivalDay;
+        const arrivalMonth = citizen.touristArrivalMonth ?? gameTime.month;
+        let daysSinceArrival: number;
+        if (gameTime.month === arrivalMonth) {
+          daysSinceArrival = gameTime.day - arrivalDay;
+        } else {
+          const daysInArrivalMonth = new Date(gameTime.year, arrivalMonth, 0).getDate();
+          daysSinceArrival = (daysInArrivalMonth - arrivalDay) + gameTime.day;
+        }
+        touristDaysRemaining = Math.max(0, 7 - daysSinceArrival);
+      }
+
       const citizenData: CitizenData = {
         id: citizen.id,
         name: citizen.name || `Citizen ${citizen.id.slice(0, 6)}`,
@@ -901,6 +929,8 @@ export default function GameBoard() {
         moodletReason: citizen.moodletReason,
         ateToday: citizen.ateToday,
         entertainedToday: citizen.entertainedToday,
+        isTourist: citizen.isTourist,
+        touristDaysRemaining,
       };
 
       // Update character names map
@@ -953,6 +983,21 @@ export default function GameBoard() {
         }
       }
 
+      // Calculate tourist days remaining
+      let touristDaysRemaining: number | undefined;
+      if (citizen.isTourist && citizen.touristArrivalDay !== undefined) {
+        const arrivalDay = citizen.touristArrivalDay;
+        const arrivalMonth = citizen.touristArrivalMonth ?? gameTime.month;
+        let daysSinceArrival: number;
+        if (gameTime.month === arrivalMonth) {
+          daysSinceArrival = gameTime.day - arrivalDay;
+        } else {
+          const daysInArrivalMonth = new Date(gameTime.year, arrivalMonth, 0).getDate();
+          daysSinceArrival = (daysInArrivalMonth - arrivalDay) + gameTime.day;
+        }
+        touristDaysRemaining = Math.max(0, 7 - daysSinceArrival);
+      }
+
       const updatedData: CitizenData = {
         id: citizen.id,
         name: citizen.name || `Citizen ${citizen.id.slice(0, 6)}`,
@@ -969,6 +1014,8 @@ export default function GameBoard() {
         moodletReason: citizen.moodletReason,
         ateToday: citizen.ateToday,
         entertainedToday: citizen.entertainedToday,
+        isTourist: citizen.isTourist,
+        touristDaysRemaining,
       };
 
       setSelectedCitizenData({ ...updatedData, monthlyRent } as CitizenData & { monthlyRent: number });
@@ -1040,6 +1087,7 @@ export default function GameBoard() {
         residenceBuildingName: residenceBuilding?.name,
         moodlet: citizen.moodlet,
         moodletReason: citizen.moodletReason,
+        isTourist: citizen.isTourist,
       };
     });
   }, []);
@@ -1058,6 +1106,8 @@ export default function GameBoard() {
   // Handle tile click (grid modifications)
   const handleTileClick = useCallback(
     (x: number, y: number) => {
+      let demolitionRefund = 0;
+
       setGrid((prevGrid) => {
         const newGrid = prevGrid.map((row) => row.map((cell) => ({ ...cell })));
 
@@ -1328,6 +1378,9 @@ export default function GameBoard() {
                 (cellType === TileType.Road || cellType === TileType.Asphalt);
 
               if (isRoadSegment) {
+                // Road demolition refund (30%)
+                demolitionRefund += Math.floor(ROAD_COSTS.buildCost * 0.3);
+
                 const neighbors = getAffectedSegments(originX, originY).filter(
                   (seg) => seg.x !== originX || seg.y !== originY
                 );
@@ -1374,6 +1427,9 @@ export default function GameBoard() {
                 if (cellType === TileType.Building && cellBuildingId) {
                   const building = getBuilding(cellBuildingId);
                   if (building) {
+                    // Building demolition refund (30%)
+                    const economics = getBuildingEconomics(building);
+                    demolitionRefund += Math.floor(economics.buildCost * 0.3);
                     // Get footprint based on stored orientation
                     const footprint = getBuildingFootprint(
                       building,
@@ -1417,6 +1473,14 @@ export default function GameBoard() {
 
         return newGrid;
       });
+
+      // Apply demolition refund from eraser
+      if (demolitionRefund > 0) {
+        setEconomy((prev) => ({
+          ...prev,
+          money: prev.money + demolitionRefund,
+        }));
+      }
     },
     [selectedTool, selectedBuildingId, buildingOrientation, canAffordBuilding, canAffordRoad]
   );
@@ -1581,6 +1645,8 @@ export default function GameBoard() {
   // Perform the actual deletion of tiles
   const performDeletion = useCallback(
     (tiles: Array<{ x: number; y: number }>) => {
+      let totalRefund = 0;
+
       setGrid((prevGrid) => {
         const newGrid = prevGrid.map((row) => row.map((cell) => ({ ...cell })));
         const deletedOrigins = new Set<string>();
@@ -1599,6 +1665,17 @@ export default function GameBoard() {
           deletedOrigins.add(originKey);
 
           const cellType = cell.type;
+
+          // Calculate demolition refund (30% of build cost)
+          if (cellType === TileType.Building && cell.buildingId) {
+            const building = getBuilding(cell.buildingId);
+            if (building) {
+              const economics = getBuildingEconomics(building);
+              totalRefund += Math.floor(economics.buildCost * 0.3);
+            }
+          } else if ((cellType === TileType.Road || cellType === TileType.Asphalt) && hasRoadSegment(prevGrid, originX, originY)) {
+            totalRefund += Math.floor(ROAD_COSTS.buildCost * 0.3);
+          }
 
           if (cellType === TileType.Road || cellType === TileType.Asphalt) {
             const isRoadSegment = hasRoadSegment(newGrid, originX, originY);
@@ -1687,6 +1764,14 @@ export default function GameBoard() {
         phaserGameRef.current?.shakeScreen("x", 0.6, 150);
         return newGrid;
       });
+
+      // Apply demolition refund
+      if (totalRefund > 0) {
+        setEconomy((prev) => ({
+          ...prev,
+          money: prev.money + totalRefund,
+        }));
+      }
     },
     []
   );

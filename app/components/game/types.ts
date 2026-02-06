@@ -162,6 +162,10 @@ export interface CharacterWithResidence extends Character {
   moodlet?: MoodletType; // Current moodlet
   moodletReason?: string; // Reason for current moodlet
   previousMoodlet?: MoodletType; // Previous moodlet (for particle effects)
+  // Tourist/grace period tracking
+  isTourist?: boolean; // New citizens are tourists until they find housing or grace period expires
+  touristArrivalDay?: number; // Day of month when they arrived (for 7-day grace period)
+  touristArrivalMonth?: number; // Month when they arrived
   // Homeless/depression tracking
   willLeaveAtMonthEnd?: boolean; // Will leave city at end of month if still homeless
   homelessSince?: number; // Month when they became homeless (for tracking)

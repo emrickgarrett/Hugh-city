@@ -9,6 +9,7 @@ export interface PopulationDataPoint {
   total: number;
   housed: number;
   homeless: number;
+  tourists: number;
 }
 
 export interface HappinessDataPoint {
@@ -37,6 +38,7 @@ interface StatisticsWindowProps {
     total: number;
     housed: number;
     homeless: number;
+    tourists: number;
   };
   currentHappiness: {
     happy: number;
@@ -173,6 +175,86 @@ function HappinessChart({
   );
 }
 
+// Stacked area-like chart for housing status (housed / tourists / homeless)
+function HousingChart({
+  history,
+  height = 120,
+}: {
+  history: PopulationDataPoint[];
+  height?: number;
+}) {
+  if (history.length === 0) {
+    return (
+      <div
+        style={{
+          height,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "#1a1a2e",
+          border: "2px solid #333",
+          color: "#666",
+          fontFamily: "var(--font-pixelify), monospace",
+          fontSize: 12,
+        }}
+      >
+        No data yet
+      </div>
+    );
+  }
+
+  const statusColors = {
+    housed: "#00aaff",
+    tourists: "#ff69b4",
+    homeless: "#ffaa00",
+  };
+
+  const barWidth = Math.max(4, Math.floor(280 / Math.max(history.length, 1)));
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-end",
+        gap: 1,
+        height,
+        padding: "0 4px",
+        background: "#1a1a2e",
+        border: "2px solid #333",
+      }}
+    >
+      {history.map((point, i) => {
+        const total = point.housed + point.tourists + point.homeless;
+        if (total === 0) return <div key={i} style={{ width: barWidth }} />;
+
+        return (
+          <div
+            key={i}
+            style={{
+              width: barWidth,
+              height: "100%",
+              display: "flex",
+              flexDirection: "column-reverse",
+            }}
+          >
+            {(["housed", "tourists", "homeless"] as const).map((status) => (
+              <div
+                key={status}
+                style={{
+                  width: "100%",
+                  height: `${(point[status] / total) * 100}%`,
+                  background: statusColors[status],
+                  minHeight: point[status] > 0 ? 1 : 0,
+                }}
+              />
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function StatisticsWindowInner({
   isVisible,
   onClose,
@@ -291,8 +373,9 @@ function StatisticsWindowInner({
                 border: "2px solid",
                 borderColor: `${GRAY_COLORS.shadow} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.shadow}`,
                 padding: "12px",
-                display: "flex",
-                justifyContent: "space-around",
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr 1fr",
+                gap: 8,
               }}
             >
               <div style={{ textAlign: "center" }}>
@@ -335,6 +418,27 @@ function StatisticsWindowInner({
                   }}
                 >
                   HOUSED
+                </div>
+              </div>
+              <div style={{ textAlign: "center" }}>
+                <div
+                  style={{
+                    color: "#ff69b4",
+                    fontSize: 24,
+                    fontWeight: "bold",
+                    fontFamily: "var(--font-pixelify), monospace",
+                  }}
+                >
+                  {currentPopulation.tourists}
+                </div>
+                <div
+                  style={{
+                    color: "#888",
+                    fontSize: 10,
+                    fontFamily: "var(--font-pixelify), monospace",
+                  }}
+                >
+                  TOURISTS
                 </div>
               </div>
               <div style={{ textAlign: "center" }}>
@@ -397,7 +501,7 @@ function StatisticsWindowInner({
               )}
             </div>
 
-            {/* Housed vs Homeless Chart */}
+            {/* Housing Status Stacked Chart */}
             <div>
               <div
                 style={{
@@ -409,25 +513,26 @@ function StatisticsWindowInner({
               >
                 Housing Status
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ color: "#00aaff", fontSize: 10, marginBottom: 2 }}>Housed</div>
-                  <MiniBarChart
-                    data={recentPopulation.map((p) => p.housed)}
-                    maxValue={maxPopulation}
-                    color="#00aaff"
-                    height={60}
-                  />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ color: "#ffaa00", fontSize: 10, marginBottom: 2 }}>Homeless</div>
-                  <MiniBarChart
-                    data={recentPopulation.map((p) => p.homeless)}
-                    maxValue={maxPopulation}
-                    color="#ffaa00"
-                    height={60}
-                  />
-                </div>
+              <HousingChart history={recentPopulation} />
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  gap: 12,
+                  marginTop: 6,
+                  flexWrap: "wrap",
+                }}
+              >
+                {[
+                  { label: "Housed", color: "#00aaff" },
+                  { label: "Tourists", color: "#ff69b4" },
+                  { label: "Homeless", color: "#ffaa00" },
+                ].map(({ label, color }) => (
+                  <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <div style={{ width: 10, height: 10, background: color }} />
+                    <span style={{ fontSize: 10, color: "#000", fontFamily: "var(--font-pixelify), monospace" }}>{label}</span>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -839,6 +944,7 @@ function arePropsEqual(
   if (prevProps.currentPopulation.total !== nextProps.currentPopulation.total) return false;
   if (prevProps.currentPopulation.housed !== nextProps.currentPopulation.housed) return false;
   if (prevProps.currentPopulation.homeless !== nextProps.currentPopulation.homeless) return false;
+  if (prevProps.currentPopulation.tourists !== nextProps.currentPopulation.tourists) return false;
 
   if (prevProps.currentHappiness.happy !== nextProps.currentHappiness.happy) return false;
   if (prevProps.currentHappiness.sad !== nextProps.currentHappiness.sad) return false;

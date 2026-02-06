@@ -13,6 +13,7 @@ export interface CitizenListItem {
   residenceBuildingName?: string;
   moodlet?: MoodletType;
   moodletReason?: string;
+  isTourist?: boolean;
 }
 
 interface CitizenListWindowProps {
@@ -139,7 +140,8 @@ export default function CitizenListWindow({
     shadow: "#505050",
   };
 
-  const homelessCount = citizens.filter((c) => !c.hasResidence).length;
+  const touristCount = citizens.filter((c) => c.isTourist && !c.hasResidence).length;
+  const homelessCount = citizens.filter((c) => !c.hasResidence && !c.isTourist).length;
   const housedCount = citizens.filter((c) => c.hasResidence).length;
 
   return (
@@ -235,7 +237,7 @@ export default function CitizenListWindow({
               fontFamily: "var(--font-pixelify), monospace",
             }}
           >
-            🚶 Homeless: {homelessCount}
+            🧳 Tourists: {touristCount} | 🚶 Homeless: {homelessCount}
           </div>
         </div>
 
@@ -274,7 +276,7 @@ export default function CitizenListWindow({
                   playClickSound();
                 }}
                 style={{
-                  background: citizen.hasResidence ? "#3a5a3a" : "#5a4a3a",
+                  background: citizen.hasResidence ? "#3a5a3a" : citizen.isTourist ? "#3a4a5a" : "#5a4a3a",
                   border: "2px solid",
                   borderColor: `${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderDark}`,
                   padding: "10px 12px",
@@ -363,6 +365,8 @@ export default function CitizenListWindow({
                   >
                     {citizen.hasResidence
                       ? `🏠 ${citizen.residenceBuildingName || "Home"}`
+                      : citizen.isTourist
+                      ? "🧳 Tourist"
                       : "🚶 Looking for home"}
                   </div>
                 </div>
