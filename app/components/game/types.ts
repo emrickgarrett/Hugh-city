@@ -169,6 +169,10 @@ export interface CharacterWithResidence extends Character {
   // Homeless/depression tracking
   willLeaveAtMonthEnd?: boolean; // Will leave city at end of month if still homeless
   homelessSince?: number; // Month when they became homeless (for tracking)
+  // Pathfinding cache - stores the full path to destination
+  cachedPath?: Direction[]; // Sequence of directions to follow
+  pathIndex?: number; // Current index in the cached path
+  lastPathTile?: { x: number; y: number }; // Tile where path was last calculated
 }
 
 export const GRID_WIDTH = 48;
