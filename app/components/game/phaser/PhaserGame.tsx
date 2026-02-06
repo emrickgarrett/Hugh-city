@@ -10,7 +10,7 @@ import {
 import Phaser from "phaser";
 import { MainScene, SceneEvents } from "./MainScene";
 import { createGameConfig } from "./gameConfig";
-import { GridCell, ToolType, Direction, Car, GameSpeed } from "../types";
+import { GridCell, ToolType, Direction, Car, GameSpeed, GameTime } from "../types";
 
 import { CharacterWithResidence } from "../types";
 
@@ -40,6 +40,8 @@ export interface PhaserGameHandle {
   evictCitizen: (citizenId: string) => boolean;
   getCitizenResidenceBuildingId: (citizenId: string) => string | undefined;
   removeHomelessCitizens: () => number; // Returns number of citizens removed
+  removeTourists: () => number; // Returns number of expired tourists leaving
+  setGameTime: (time: GameTime) => void;
 }
 
 interface PhaserGameProps {
@@ -223,6 +225,17 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
             return sceneRef.current.removeHomelessCitizens();
           }
           return 0;
+        },
+        removeTourists: () => {
+          if (sceneRef.current) {
+            return sceneRef.current.removeTourists();
+          }
+          return 0;
+        },
+        setGameTime: (time: GameTime) => {
+          if (sceneRef.current) {
+            sceneRef.current.setGameTime(time);
+          }
         },
       }),
       []

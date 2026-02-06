@@ -67,6 +67,11 @@ import TimeTracker from "../ui/TimeTracker";
 import BuildingInfoWindow, { BuildingStats } from "../ui/BuildingInfoWindow";
 import CitizenInfoWindow, { CitizenData } from "../ui/CitizenInfoWindow";
 import CitizenListWindow, { CitizenListItem } from "../ui/CitizenListWindow";
+import StatisticsWindow, {
+  PopulationDataPoint,
+  HappinessDataPoint,
+  BuildingCategoryCount,
+} from "../ui/StatisticsWindow";
 import { getBuildingEconomics, ROAD_COSTS } from "@/app/data/buildings";
 
 // Initialize empty grid
@@ -183,6 +188,14 @@ export default function GameBoard() {
   const [selectedCitizenData, setSelectedCitizenData] = useState<CitizenData | null>(null);
   const [isCitizenInfoVisible, setIsCitizenInfoVisible] = useState(false);
   const [isCitizenListVisible, setIsCitizenListVisible] = useState(false);
+
+  // Statistics tracking
+  const [isStatisticsVisible, setIsStatisticsVisible] = useState(false);
+  const [populationHistory, setPopulationHistory] = useState<PopulationDataPoint[]>([]);
+  const [happinessHistory, setHappinessHistory] = useState<HappinessDataPoint[]>([]);
+  const [currentPopulationStats, setCurrentPopulationStats] = useState({ total: 0, housed: 0, homeless: 0, tourists: 0 });
+  const [currentHappinessStats, setCurrentHappinessStats] = useState({ happy: 0, sad: 0, hungry: 0, angry: 0, depressed: 0 });
+  const [buildingCountsStats, setBuildingCountsStats] = useState<BuildingCategoryCount[]>([]);
 
   // Banks configuration
   const banks: Bank[] = [
@@ -471,11 +484,28 @@ export default function GameBoard() {
     prevMonthRef.current = gameTime.month;
   }, [gameTime.month, processMonthlyPayments]);
 
-  // Reset citizen daily money when day changes
+  // Sync game time to Phaser (runs frequently to keep Phaser in sync)
+  useEffect(() => {
+    if (phaserGameRef.current) {
+      phaserGameRef.current.setGameTime(gameTime);
+    }
+  }, [gameTime.day, gameTime.month, gameTime.year]);
+
+  // Reset citizen daily money and check tourist expiry when day changes
   useEffect(() => {
     if (gameTime.day !== prevDayRef.current) {
       if (phaserGameRef.current) {
         phaserGameRef.current.resetDailyMoney();
+
+        // Check for expired tourists every day
+        const touristsLeaving = phaserGameRef.current.removeTourists();
+        if (touristsLeaving > 0) {
+          setModalState({
+            isVisible: true,
+            title: "Tourists Leaving",
+            message: `${touristsLeaving} tourist${touristsLeaving > 1 ? 's' : ''} couldn't find housing and ${touristsLeaving > 1 ? 'are' : 'is'} leaving the city.`,
+          });
+        }
       }
     }
     prevDayRef.current = gameTime.day;
@@ -536,6 +566,119 @@ export default function GameBoard() {
       phaserGameRef.current.setGameSpeed(gameSpeed);
     }
   }, [gameSpeed]);
+
+  // Ref to track current game time for statistics (avoids re-creating interval)
+  const gameTimeRef = useRef(gameTime);
+  useEffect(() => {
+    gameTimeRef.current = gameTime;
+  }, [gameTime]);
+
+  // Collect statistics periodically
+  useEffect(() => {
+    if (gameSpeed === GameSpeed.Paused) return;
+
+    const collectStats = () => {
+      if (!phaserGameRef.current) return;
+
+      try {
+        const characters = phaserGameRef.current.getAllCitizens() || [];
+        const time = gameTimeRef.current;
+        const timestamp = time.year * 525600 + time.month * 43800 + time.day * 1440 + time.hour * 60 + time.minute;
+
+        // Population stats
+        const housed = characters.filter((c) => c.residenceX !== undefined).length;
+        const tourists = characters.filter((c) => c.isTourist && c.residenceX === undefined).length;
+        const homeless = characters.filter((c) => c.residenceX === undefined && !c.isTourist).length;
+        const populationPoint = {
+          total: characters.length,
+          housed,
+          homeless,
+          tourists,
+        };
+
+        setPopulationHistory((prev) => {
+          const newPoint: PopulationDataPoint = {
+            timestamp,
+            ...populationPoint,
+          };
+          return [...prev, newPoint].slice(-200);
+        });
+
+        setCurrentPopulationStats(populationPoint);
+
+        // Happiness stats
+        const happinessCount = {
+          happy: 0,
+          sad: 0,
+          hungry: 0,
+          angry: 0,
+          depressed: 0,
+        };
+
+        characters.forEach((c) => {
+          const moodlet = c.moodlet || "sad";
+          if (moodlet in happinessCount) {
+            happinessCount[moodlet as keyof typeof happinessCount]++;
+          }
+        });
+
+        setHappinessHistory((prev) => {
+          const newPoint: HappinessDataPoint = {
+            timestamp,
+            ...happinessCount,
+          };
+          return [...prev, newPoint].slice(-200);
+        });
+
+        setCurrentHappinessStats(happinessCount);
+      } catch (e) {
+        console.warn("Stats collection error:", e);
+      }
+    };
+
+    const statsInterval = setInterval(collectStats, 5000);
+    return () => clearInterval(statsInterval);
+  }, [gameSpeed]);
+
+  // Update building counts when grid or buildingStats change
+  useEffect(() => {
+    const categoryMap = new Map<string, { count: number; totalRevenue: number }>();
+    const categoryColors: Record<string, string> = {
+      residential: "#4ade80",
+      commercial: "#60a5fa",
+      civic: "#f472b6",
+      landmark: "#fbbf24",
+      props: "#a78bfa",
+      christmas: "#ef4444",
+    };
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        const cell = grid[y][x];
+        if (cell.type === TileType.Building && cell.buildingId && cell.isOrigin) {
+          const building = getBuilding(cell.buildingId);
+          if (building) {
+            const existing = categoryMap.get(building.category) || { count: 0, totalRevenue: 0 };
+            const buildingKey = `${x},${y}`;
+            const stats = buildingStats.get(buildingKey);
+            categoryMap.set(building.category, {
+              count: existing.count + 1,
+              totalRevenue: existing.totalRevenue + (stats?.totalRevenue || 0),
+            });
+          }
+        }
+      }
+    }
+
+    const counts = Array.from(categoryMap.entries()).map(([category, data]) => ({
+      category,
+      count: data.count,
+      totalRevenue: data.totalRevenue,
+      color: categoryColors[category] || "#888888",
+    }));
+
+    setBuildingCountsStats(counts);
+  }, [grid, buildingStats]);
 
   // Loan handling functions
   const handleTakeLoan = useCallback(
@@ -755,6 +898,21 @@ export default function GameBoard() {
         }
       }
 
+      // Calculate tourist days remaining
+      let touristDaysRemaining: number | undefined;
+      if (citizen.isTourist && citizen.touristArrivalDay !== undefined) {
+        const arrivalDay = citizen.touristArrivalDay;
+        const arrivalMonth = citizen.touristArrivalMonth ?? gameTime.month;
+        let daysSinceArrival: number;
+        if (gameTime.month === arrivalMonth) {
+          daysSinceArrival = gameTime.day - arrivalDay;
+        } else {
+          const daysInArrivalMonth = new Date(gameTime.year, arrivalMonth, 0).getDate();
+          daysSinceArrival = (daysInArrivalMonth - arrivalDay) + gameTime.day;
+        }
+        touristDaysRemaining = Math.max(0, 7 - daysSinceArrival);
+      }
+
       const citizenData: CitizenData = {
         id: citizen.id,
         name: citizen.name || `Citizen ${citizen.id.slice(0, 6)}`,
@@ -771,6 +929,8 @@ export default function GameBoard() {
         moodletReason: citizen.moodletReason,
         ateToday: citizen.ateToday,
         entertainedToday: citizen.entertainedToday,
+        isTourist: citizen.isTourist,
+        touristDaysRemaining,
       };
 
       // Update character names map
@@ -823,6 +983,21 @@ export default function GameBoard() {
         }
       }
 
+      // Calculate tourist days remaining
+      let touristDaysRemaining: number | undefined;
+      if (citizen.isTourist && citizen.touristArrivalDay !== undefined) {
+        const arrivalDay = citizen.touristArrivalDay;
+        const arrivalMonth = citizen.touristArrivalMonth ?? gameTime.month;
+        let daysSinceArrival: number;
+        if (gameTime.month === arrivalMonth) {
+          daysSinceArrival = gameTime.day - arrivalDay;
+        } else {
+          const daysInArrivalMonth = new Date(gameTime.year, arrivalMonth, 0).getDate();
+          daysSinceArrival = (daysInArrivalMonth - arrivalDay) + gameTime.day;
+        }
+        touristDaysRemaining = Math.max(0, 7 - daysSinceArrival);
+      }
+
       const updatedData: CitizenData = {
         id: citizen.id,
         name: citizen.name || `Citizen ${citizen.id.slice(0, 6)}`,
@@ -839,6 +1014,8 @@ export default function GameBoard() {
         moodletReason: citizen.moodletReason,
         ateToday: citizen.ateToday,
         entertainedToday: citizen.entertainedToday,
+        isTourist: citizen.isTourist,
+        touristDaysRemaining,
       };
 
       setSelectedCitizenData({ ...updatedData, monthlyRent } as CitizenData & { monthlyRent: number });
@@ -910,6 +1087,7 @@ export default function GameBoard() {
         residenceBuildingName: residenceBuilding?.name,
         moodlet: citizen.moodlet,
         moodletReason: citizen.moodletReason,
+        isTourist: citizen.isTourist,
       };
     });
   }, []);
@@ -920,9 +1098,16 @@ export default function GameBoard() {
     handleCitizenClick(citizenId);
   }, [handleCitizenClick]);
 
+  // Memoized close handler for statistics window
+  const handleStatisticsClose = useCallback(() => {
+    setIsStatisticsVisible(false);
+  }, []);
+
   // Handle tile click (grid modifications)
   const handleTileClick = useCallback(
     (x: number, y: number) => {
+      let demolitionRefund = 0;
+
       setGrid((prevGrid) => {
         const newGrid = prevGrid.map((row) => row.map((cell) => ({ ...cell })));
 
@@ -1193,6 +1378,9 @@ export default function GameBoard() {
                 (cellType === TileType.Road || cellType === TileType.Asphalt);
 
               if (isRoadSegment) {
+                // Road demolition refund (30%)
+                demolitionRefund += Math.floor(ROAD_COSTS.buildCost * 0.3);
+
                 const neighbors = getAffectedSegments(originX, originY).filter(
                   (seg) => seg.x !== originX || seg.y !== originY
                 );
@@ -1239,6 +1427,9 @@ export default function GameBoard() {
                 if (cellType === TileType.Building && cellBuildingId) {
                   const building = getBuilding(cellBuildingId);
                   if (building) {
+                    // Building demolition refund (30%)
+                    const economics = getBuildingEconomics(building);
+                    demolitionRefund += Math.floor(economics.buildCost * 0.3);
                     // Get footprint based on stored orientation
                     const footprint = getBuildingFootprint(
                       building,
@@ -1282,6 +1473,14 @@ export default function GameBoard() {
 
         return newGrid;
       });
+
+      // Apply demolition refund from eraser
+      if (demolitionRefund > 0) {
+        setEconomy((prev) => ({
+          ...prev,
+          money: prev.money + demolitionRefund,
+        }));
+      }
     },
     [selectedTool, selectedBuildingId, buildingOrientation, canAffordBuilding, canAffordRoad]
   );
@@ -1446,6 +1645,8 @@ export default function GameBoard() {
   // Perform the actual deletion of tiles
   const performDeletion = useCallback(
     (tiles: Array<{ x: number; y: number }>) => {
+      let totalRefund = 0;
+
       setGrid((prevGrid) => {
         const newGrid = prevGrid.map((row) => row.map((cell) => ({ ...cell })));
         const deletedOrigins = new Set<string>();
@@ -1464,6 +1665,17 @@ export default function GameBoard() {
           deletedOrigins.add(originKey);
 
           const cellType = cell.type;
+
+          // Calculate demolition refund (30% of build cost)
+          if (cellType === TileType.Building && cell.buildingId) {
+            const building = getBuilding(cell.buildingId);
+            if (building) {
+              const economics = getBuildingEconomics(building);
+              totalRefund += Math.floor(economics.buildCost * 0.3);
+            }
+          } else if ((cellType === TileType.Road || cellType === TileType.Asphalt) && hasRoadSegment(prevGrid, originX, originY)) {
+            totalRefund += Math.floor(ROAD_COSTS.buildCost * 0.3);
+          }
 
           if (cellType === TileType.Road || cellType === TileType.Asphalt) {
             const isRoadSegment = hasRoadSegment(newGrid, originX, originY);
@@ -1552,6 +1764,14 @@ export default function GameBoard() {
         phaserGameRef.current?.shakeScreen("x", 0.6, 150);
         return newGrid;
       });
+
+      // Apply demolition refund
+      if (totalRefund > 0) {
+        setEconomy((prev) => ({
+          ...prev,
+          money: prev.money + totalRefund,
+        }));
+      }
     },
     []
   );
@@ -2357,6 +2577,48 @@ export default function GameBoard() {
         >
           🏦
         </button>
+        {/* Statistics button */}
+        <button
+          onClick={() => {
+            setIsStatisticsVisible(true);
+            playDoubleClickSound();
+          }}
+          title="Statistics"
+          style={{
+            background: "#5a5a5a",
+            border: "2px solid",
+            borderColor: "#7a7a7a #3a3a3a #3a3a3a #7a7a7a",
+            borderTop: "none",
+            padding: 0,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 0,
+            boxShadow: "1px 1px 0px #2a2a2a",
+            imageRendering: "pixelated",
+            transition: "filter 0.1s",
+            width: 48,
+            height: 48,
+            fontSize: 24,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.filter = "brightness(1.1)")}
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+          onMouseDown={(e) => {
+            e.currentTarget.style.filter = "brightness(0.9)";
+            e.currentTarget.style.borderColor = "#3a3a3a #7a7a7a #7a7a7a #3a3a3a";
+            e.currentTarget.style.transform = "translate(1px, 1px)";
+            e.currentTarget.style.boxShadow = "inset 1px 1px 0px #2a2a2a";
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.filter = "brightness(1.1)";
+            e.currentTarget.style.borderColor = "#7a7a7a #3a3a3a #3a3a3a #7a7a7a";
+            e.currentTarget.style.transform = "none";
+            e.currentTarget.style.boxShadow = "1px 1px 0px #2a2a2a";
+          }}
+        >
+          📊
+        </button>
         <MoneyDisplay money={economy.money} />
         <MusicPlayer />
       </div>
@@ -2397,6 +2659,19 @@ export default function GameBoard() {
         citizens={getCitizenList()}
         onCitizenClick={handleCitizenListClick}
       />
+
+      {/* Statistics Window - only render when visible to avoid re-render issues */}
+      {isStatisticsVisible && (
+        <StatisticsWindow
+          isVisible={isStatisticsVisible}
+          onClose={handleStatisticsClose}
+          populationHistory={populationHistory}
+          happinessHistory={happinessHistory}
+          buildingCounts={buildingCountsStats}
+          currentPopulation={currentPopulationStats}
+          currentHappiness={currentHappinessStats}
+        />
+      )}
 
       {/* Main game area */}
       <div

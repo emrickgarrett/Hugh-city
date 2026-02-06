@@ -20,6 +20,8 @@ export interface CitizenData {
   moodletReason?: string;
   ateToday?: boolean;
   entertainedToday?: boolean;
+  isTourist?: boolean;
+  touristDaysRemaining?: number;
 }
 
 interface CitizenInfoWindowProps {
@@ -287,7 +289,7 @@ export default function CitizenInfoWindow({
         }}
       >
         <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          👤 Citizen Profile
+          {citizen.isTourist ? "🧳 Tourist Profile" : "👤 Citizen Profile"}
         </span>
         <button
           onClick={onClose}
@@ -635,9 +637,9 @@ export default function CitizenInfoWindow({
                   </span>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                  <span>{citizen.residenceX !== undefined ? "✅" : "❌"}</span>
-                  <span style={{ color: citizen.residenceX !== undefined ? "#008000" : "#cc0000" }}>
-                    {citizen.residenceX !== undefined ? "Housed" : "Homeless"}
+                  <span>{citizen.residenceX !== undefined ? "✅" : citizen.isTourist ? "🧳" : "❌"}</span>
+                  <span style={{ color: citizen.residenceX !== undefined ? "#008000" : citizen.isTourist ? "#1a8cff" : "#cc0000" }}>
+                    {citizen.residenceX !== undefined ? "Housed" : citizen.isTourist ? "Tourist" : "Homeless"}
                   </span>
                 </div>
               </div>
@@ -672,6 +674,17 @@ export default function CitizenInfoWindow({
                 Location: ({citizen.residenceX}, {citizen.residenceY})
               </div>
             </>
+          ) : citizen.isTourist ? (
+            <div>
+              <div style={{ fontSize: 11, color: "#1a8cff", fontStyle: "italic" }}>
+                🧳 Tourist - Exploring the city!
+              </div>
+              {citizen.touristDaysRemaining !== undefined && (
+                <div style={{ fontSize: 10, color: "#666", marginTop: 4 }}>
+                  {citizen.touristDaysRemaining} day{citizen.touristDaysRemaining !== 1 ? 's' : ''} left to find housing
+                </div>
+              )}
+            </div>
           ) : (
             <div style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>
               🚶 Homeless - Looking for housing
