@@ -407,7 +407,7 @@ function AchievementsWindowInner({
                           fontFamily: "var(--font-pixelify), monospace",
                         }}
                       >
-                        Save: {unlocked.saveName}
+                        City: {unlocked.saveName}
                       </span>
                     </div>
                   )}

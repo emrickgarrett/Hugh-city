@@ -14,6 +14,7 @@ import {
   GameSpeed,
   Bank,
   ActiveLoan,
+  GameSaveData,
 } from "./types";
 import {
   ROAD_SEGMENT_SIZE,
@@ -58,9 +59,7 @@ const PhaserGame = dynamic(() => import("./phaser/PhaserGame"), {
 
 import ToolWindow from "../ui/ToolWindow";
 import MusicPlayer from "../ui/MusicPlayer";
-import LoadWindow from "../ui/LoadWindow";
 import Modal from "../ui/Modal";
-import PromptModal from "../ui/PromptModal";
 import MoneyDisplay from "../ui/MoneyDisplay";
 import BankWindow from "../ui/BankWindow";
 import TimeTracker from "../ui/TimeTracker";
@@ -113,7 +112,13 @@ const findClosestZoomIndex = (zoomValue: number): number => {
   return closestIndex;
 };
 
-export default function GameBoard() {
+interface GameBoardProps {
+  cityName: string;
+  initialSaveData?: GameSaveData;
+  onReturnToMenu?: () => void;
+}
+
+export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }: GameBoardProps) {
   // Grid state (only thing React manages now)
   const [grid, setGrid] = useState<GridCell[][]>(createEmptyGrid);
 
@@ -130,7 +135,6 @@ export default function GameBoard() {
   const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(
     null
   );
-  const [isLoadWindowVisible, setIsLoadWindowVisible] = useState(false);
   const [modalState, setModalState] = useState<{
     isVisible: boolean;
     title: string;
@@ -142,19 +146,6 @@ export default function GameBoard() {
     title: "",
     message: "",
     showCancel: false,
-    onConfirm: null,
-  });
-  const [promptState, setPromptState] = useState<{
-    isVisible: boolean;
-    title: string;
-    message: string;
-    defaultValue: string;
-    onConfirm: ((value: string) => void) | null;
-  }>({
-    isVisible: false,
-    title: "",
-    message: "",
-    defaultValue: "",
     onConfirm: null,
   });
   const [visualSettings, setVisualSettings] = useState<VisualSettings>({
@@ -210,8 +201,8 @@ export default function GameBoard() {
   // Achievements state
   const [isAchievementsVisible, setIsAchievementsVisible] = useState(false);
   const [achievementToast, setAchievementToast] = useState<AchievementDefinition | null>(null);
-  const [currentSaveName, setCurrentSaveName] = useState("Unsaved");
-  const currentSaveNameRef = useRef("Unsaved");
+  const cityNameRef = useRef(cityName);
+  useEffect(() => { cityNameRef.current = cityName; }, [cityName]);
 
   // Achievement progress tracking refs (cumulative, survive across renders)
   const totalBuildingsPlacedRef = useRef(0);
@@ -269,6 +260,40 @@ export default function GameBoard() {
       midnightWitnessedRef.current = progress.midnightWitnessed;
     }
   }, []);
+
+  // Load initial save data if provided (from main menu "Load Game")
+  const initialLoadDoneRef = useRef(false);
+  useEffect(() => {
+    if (!initialSaveData || initialLoadDoneRef.current) return;
+
+    const tryLoad = () => {
+      if (phaserGameRef.current?.isSceneReady()) {
+        initialLoadDoneRef.current = true;
+        // Restore grid
+        setGrid(initialSaveData.grid);
+        phaserGameRef.current.clearCharacters();
+        phaserGameRef.current.clearCars();
+        if (initialSaveData.zoom !== undefined) setZoom(initialSaveData.zoom);
+        if (initialSaveData.visualSettings) setVisualSettings(initialSaveData.visualSettings);
+        if (initialSaveData.dayNightEnabled !== undefined) setDayNightEnabled(initialSaveData.dayNightEnabled);
+        if (initialSaveData.economy) setEconomy(initialSaveData.economy);
+        if (initialSaveData.gameTime) setGameTime(initialSaveData.gameTime);
+        if (initialSaveData.gameSpeed !== undefined) setGameSpeed(initialSaveData.gameSpeed);
+        setTimeout(() => {
+          for (let i = 0; i < (initialSaveData.characterCount ?? 0); i++) {
+            phaserGameRef.current?.spawnCharacter();
+          }
+          for (let i = 0; i < (initialSaveData.carCount ?? 0); i++) {
+            phaserGameRef.current?.spawnCar();
+          }
+        }, 100);
+      } else {
+        // Phaser not ready yet, retry
+        setTimeout(tryLoad, 200);
+      }
+    };
+    tryLoad();
+  }, [initialSaveData]);
 
   // Day/Night cycle visual computations
   const dayNightVisuals = useMemo<DayNightVisuals | null>(() => {
@@ -881,7 +906,7 @@ export default function GameBoard() {
         ];
         for (const ra of revenueAchievements) {
           if (rev >= ra.threshold) {
-            const result = unlockAchievement(ra.id, currentSaveNameRef.current);
+            const result = unlockAchievement(ra.id, cityNameRef.current);
             if (result) {
               const def = ACHIEVEMENT_MAP[ra.id];
               if (def) setAchievementToast(def);
@@ -1308,7 +1333,7 @@ export default function GameBoard() {
         }
 
         if (shouldUnlock) {
-          const result = unlockAchievement(achievement.id, currentSaveName);
+          const result = unlockAchievement(achievement.id, cityNameRef.current);
           if (result) {
             // Newly unlocked! Show toast
             setAchievementToast(achievement);
@@ -1327,7 +1352,7 @@ export default function GameBoard() {
     }, 2000);
 
     return () => clearInterval(checkInterval);
-  }, [currentSaveName]);
+  }, [cityName]);
 
   // Handle tile click (grid modifications)
   const handleTileClick = useCallback(
@@ -2100,129 +2125,47 @@ export default function GameBoard() {
   }, []);
 
   // Save/Load functions
-  interface GameSaveData {
-    grid: GridCell[][];
-    characterCount: number;
-    carCount: number;
-    zoom?: number;
-    visualSettings?: VisualSettings;
-    dayNightEnabled?: boolean;
-    timestamp: number;
-    economy?: GameEconomy;
-    gameTime?: GameTime;
-    gameSpeed?: GameSpeed;
-  }
-
   const handleSaveGame = useCallback(() => {
     const characterCount = phaserGameRef.current?.getCharacterCount() ?? 0;
     const carCount = phaserGameRef.current?.getCarCount() ?? 0;
 
-    // Check if there are any existing saves
-    const existingSaves: string[] = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key && key.startsWith("hugh-city_save_")) {
-        existingSaves.push(key.replace("hugh-city_save_", ""));
-      }
-    }
+    const saveData: GameSaveData = {
+      grid,
+      characterCount,
+      carCount,
+      zoom,
+      visualSettings,
+      dayNightEnabled,
+      timestamp: Date.now(),
+      economy,
+      gameTime,
+      gameSpeed,
+      cityName,
+    };
 
-    if (existingSaves.length === 0) {
-      // First save - prompt for name
-      setPromptState({
-        isVisible: true,
-        title: "Save Game",
-        message: "Enter a name for this save:",
-        defaultValue: "",
-        onConfirm: (saveName: string) => {
-          const saveData: GameSaveData = {
-            grid,
-            characterCount,
-            carCount,
-            zoom,
-            visualSettings,
-            dayNightEnabled,
-            timestamp: Date.now(),
-            economy,
-            gameTime,
-            gameSpeed,
-          };
-
-          try {
-            localStorage.setItem(
-              `hugh-city_save_${saveName}`,
-              JSON.stringify(saveData)
-            );
-            setCurrentSaveName(saveName); currentSaveNameRef.current = saveName;
-            setModalState({
-              isVisible: true,
-              title: "Game Saved",
-              message: `Game saved as "${saveName}"!`,
-            });
-            playDoubleClickSound();
-          } catch (error) {
-            setModalState({
-              isVisible: true,
-              title: "Save Failed",
-              message: "Failed to save game!",
-            });
-            console.error("Save error:", error);
-          }
-        },
-      });
-    } else {
-      // Use default name or prompt
-      const defaultName = `Save ${existingSaves.length + 1}`;
-      setPromptState({
-        isVisible: true,
-        title: "Save Game",
-        message: `Enter a name for this save:\n(Leave empty for "${defaultName}")`,
-        defaultValue: defaultName,
-        onConfirm: (saveName: string) => {
-          const finalName =
-            saveName.trim() === "" ? defaultName : saveName.trim();
-          const saveData: GameSaveData = {
-            grid,
-            characterCount,
-            carCount,
-            zoom,
-            visualSettings,
-            dayNightEnabled,
-            timestamp: Date.now(),
-            economy,
-            gameTime,
-            gameSpeed,
-          };
-
-          try {
-            localStorage.setItem(
-              `hugh-city_save_${finalName}`,
-              JSON.stringify(saveData)
-            );
-            setCurrentSaveName(finalName); currentSaveNameRef.current = finalName;
-            setModalState({
-              isVisible: true,
-              title: "Game Saved",
-              message: `Game saved as "${finalName}"!`,
-            });
-            playDoubleClickSound();
-          } catch (error) {
-            setModalState({
-              isVisible: true,
-              title: "Save Failed",
-              message: "Failed to save game!",
-            });
-            console.error("Save error:", error);
-          }
-        },
-      });
-    }
-  }, [grid, zoom, visualSettings, dayNightEnabled]);
-
-  const handleLoadGame = useCallback((saveData: GameSaveData, saveName: string) => {
     try {
-      // Set current save name for achievements
-      setCurrentSaveName(saveName); currentSaveNameRef.current = saveName;
+      localStorage.setItem(
+        `hugh-city_save_${cityName}`,
+        JSON.stringify(saveData)
+      );
+      setModalState({
+        isVisible: true,
+        title: "Game Saved",
+        message: `City "${cityName}" saved!`,
+      });
+      playDoubleClickSound();
+    } catch (error) {
+      setModalState({
+        isVisible: true,
+        title: "Save Failed",
+        message: "Failed to save game!",
+      });
+      console.error("Save error:", error);
+    }
+  }, [grid, zoom, visualSettings, dayNightEnabled, economy, gameTime, gameSpeed, cityName]);
 
+  const handleLoadGame = useCallback((saveData: GameSaveData) => {
+    try {
       // Restore grid
       setGrid(saveData.grid);
 
@@ -2333,6 +2276,61 @@ export default function GameBoard() {
         }}
         onWheel={(e) => e.stopPropagation()}
       >
+        {/* Menu button */}
+        <button
+          onClick={() => {
+            playDoubleClickSound();
+            setModalState({
+              isVisible: true,
+              title: "Return to Menu",
+              message: "Return to main menu? Unsaved progress will be lost.",
+              showCancel: true,
+              onConfirm: () => onReturnToMenu?.(),
+            });
+          }}
+          title="Main Menu"
+          className="rct-blue-button-interactive"
+          style={{
+            background: "#B0B0B0",
+            border: "2px solid",
+            borderColor: "#D0D0D0 #707070 #707070 #D0D0D0",
+            padding: 0,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 0,
+            borderTopWidth: 0,
+            boxShadow: "1px 1px 0px #505050",
+            transition: "filter 0.1s",
+            width: 48,
+            height: 48,
+          }}
+          onMouseEnter={(e) =>
+            (e.currentTarget.style.filter = "brightness(1.1)")
+          }
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+          onMouseDown={(e) => {
+            e.currentTarget.style.filter = "brightness(0.9)";
+            e.currentTarget.style.borderColor =
+              "#707070 #D0D0D0 #D0D0D0 #707070";
+            e.currentTarget.style.transform = "translate(1px, 1px)";
+            e.currentTarget.style.boxShadow = "inset 1px 1px 0px #505050";
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.filter = "brightness(1.1)";
+            e.currentTarget.style.borderColor =
+              "#D0D0D0 #707070 #707070 #D0D0D0";
+            e.currentTarget.style.transform = "none";
+            e.currentTarget.style.boxShadow = "1px 1px 0px #505050";
+          }}
+        >
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+            <path d="M10 3H4C3.45 3 3 3.45 3 4V20C3 20.55 3.45 21 4 21H10" stroke="#444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M15 7L10 12L15 17" stroke="#444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M10 12H22" stroke="#444" strokeWidth="2.5" strokeLinecap="round"/>
+          </svg>
+        </button>
         {/* Save button */}
         <button
           onClick={() => {
@@ -2380,60 +2378,6 @@ export default function GameBoard() {
           <img
             src="/UI/save.png"
             alt="Save"
-            style={{
-              width: 48,
-              height: 48,
-              display: "block",
-            }}
-          />
-        </button>
-        {/* Load button */}
-        <button
-          onClick={() => {
-            setIsLoadWindowVisible(true);
-            playDoubleClickSound();
-          }}
-          title="Load Game"
-          className="rct-blue-button-interactive"
-          style={{
-            background: "#B0B0B0",
-            border: "2px solid",
-            borderColor: "#D0D0D0 #707070 #707070 #D0D0D0",
-            padding: 0,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: 0,
-            borderTopWidth: 0,
-            boxShadow: "1px 1px 0px #505050",
-            imageRendering: "pixelated",
-            transition: "filter 0.1s",
-            width: 48,
-            height: 48,
-          }}
-          onMouseEnter={(e) =>
-            (e.currentTarget.style.filter = "brightness(1.1)")
-          }
-          onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
-          onMouseDown={(e) => {
-            e.currentTarget.style.filter = "brightness(0.9)";
-            e.currentTarget.style.borderColor =
-              "#707070 #D0D0D0 #D0D0D0 #707070";
-            e.currentTarget.style.transform = "translate(1px, 1px)";
-            e.currentTarget.style.boxShadow = "inset 1px 1px 0px #505050";
-          }}
-          onMouseUp={(e) => {
-            e.currentTarget.style.filter = "brightness(1.1)";
-            e.currentTarget.style.borderColor =
-              "#D0D0D0 #707070 #707070 #D0D0D0";
-            e.currentTarget.style.transform = "none";
-            e.currentTarget.style.boxShadow = "1px 1px 0px #505050";
-          }}
-        >
-          <img
-            src="/UI/load.png"
-            alt="Load"
             style={{
               width: 48,
               height: 48,
@@ -2547,6 +2491,23 @@ export default function GameBoard() {
             }}
           />
         </button>
+      </div>
+
+      {/* City name label */}
+      <div
+        style={{
+          position: "absolute",
+          top: 52,
+          left: 6,
+          color: "var(--rct-text-light)",
+          fontSize: 18,
+          fontFamily: "var(--font-jersey), monospace",
+          textShadow: "1px 1px 2px rgba(0,0,0,0.8)",
+          zIndex: 1000,
+          pointerEvents: "none",
+        }}
+      >
+        {cityName}
       </div>
 
       {/* Top Right - Unified toolbar: TimeTracker + Build + Eraser */}
@@ -3075,13 +3036,6 @@ export default function GameBoard() {
           }}
         />
 
-        {/* Load window */}
-        <LoadWindow
-          isVisible={isLoadWindowVisible}
-          onClose={() => setIsLoadWindowVisible(false)}
-          onLoad={handleLoadGame}
-        />
-
         {/* Modal */}
         <Modal
           isVisible={modalState.isVisible}
@@ -3092,21 +3046,6 @@ export default function GameBoard() {
           onClose={() =>
             setModalState({ ...modalState, isVisible: false, onConfirm: null })
           }
-        />
-
-        {/* Prompt Modal */}
-        <PromptModal
-          isVisible={promptState.isVisible}
-          title={promptState.title}
-          message={promptState.message}
-          defaultValue={promptState.defaultValue}
-          onClose={() => setPromptState({ ...promptState, isVisible: false })}
-          onConfirm={(value) => {
-            if (promptState.onConfirm) {
-              promptState.onConfirm(value);
-            }
-            setPromptState({ ...promptState, isVisible: false });
-          }}
         />
 
         {/* Mobile Warning Banner */}

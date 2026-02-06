@@ -43,6 +43,7 @@ export interface PhaserGameHandle {
   removeTourists: () => { leaving: number; becameHomeless: number };
   setGameTime: (time: GameTime) => void;
   setDayNightState: (state: { skyColor: string; glowIntensity: number; phase: string }) => void;
+  isSceneReady: () => boolean;
 }
 
 interface PhaserGameProps {
@@ -242,6 +243,9 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
           if (sceneRef.current) {
             sceneRef.current.setDayNightState(state);
           }
+        },
+        isSceneReady: () => {
+          return sceneRef.current?.getIsReady() ?? false;
         },
       }),
       []

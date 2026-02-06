@@ -221,3 +221,18 @@ export function isoToGrid(
     y: (isoY / (TILE_HEIGHT / 2) - isoX / (TILE_WIDTH / 2)) / 2,
   };
 }
+
+// Save/Load data structure
+export interface GameSaveData {
+  grid: GridCell[][];
+  characterCount: number;
+  carCount: number;
+  zoom?: number;
+  visualSettings?: VisualSettings;
+  dayNightEnabled?: boolean;
+  timestamp: number;
+  economy?: GameEconomy;
+  gameTime?: GameTime;
+  gameSpeed?: GameSpeed;
+  cityName?: string; // Optional for backward compat with old saves
+}
