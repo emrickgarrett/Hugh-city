@@ -23,17 +23,11 @@ import {
   ROAD_SEGMENT_SIZE,
   getRoadSegmentOrigin,
   hasRoadSegment,
-  getRoadConnections,
-  getSegmentType,
-  generateRoadPattern,
-  canPlaceRoadSegment,
 } from "../roadUtils";
 import {
   BUILDINGS,
   getBuilding,
-  getBuildingFootprint,
   getBuildingEconomics,
-  BuildingDefinition,
 } from "@/app/data/buildings";
 import { loadGifAsAnimation, playGifAnimation } from "./GifLoader";
 import { directionVectors, oppositeDirection, allDirections } from "./utils/directions";
@@ -51,6 +45,8 @@ import {
 import { PathfindingSystem } from "./systems/PathfindingSystem";
 import { CarAISystem } from "./systems/CarAISystem";
 import { CitizenAISystem, CitizenAIContext } from "./systems/CitizenAISystem";
+import { PreviewSystem } from "./systems/PreviewSystem";
+import { BuildingRenderSystem } from "./systems/BuildingRenderSystem";
 
 // Event types for React communication
 export interface SceneEvents {
@@ -70,18 +66,18 @@ export class MainScene extends Phaser.Scene {
   readonly pathfinding = new PathfindingSystem();
   readonly carAI = new CarAISystem(this.pathfinding);
   readonly citizenAI = new CitizenAISystem(this.pathfinding);
+  readonly previewSystem = new PreviewSystem();
+  readonly buildingRenderer = new BuildingRenderSystem();
 
   // Depth scaling for stable painter's algorithm ordering
   private readonly DEPTH_Y_MULT = DEPTH_Y_MULT;
 
   // Sprite containers
   private tileSprites: Map<string, Phaser.GameObjects.Image> = new Map();
-  private buildingSprites: Map<string, Phaser.GameObjects.Image> = new Map();
-  private glowSprites: Map<string, Phaser.GameObjects.GameObject> = new Map();
+  // Building sprites now managed by buildingRenderer system
+  // Access via: this.buildingRenderer.buildingSprites / this.buildingRenderer.glowSprites
   private carSprites: Map<string, Phaser.GameObjects.Sprite> = new Map();
   private characterSprites: Map<string, Phaser.GameObjects.Sprite> = new Map();
-  private previewSprites: Phaser.GameObjects.Image[] = [];
-  private lotPreviewSprites: Phaser.GameObjects.Image[] = [];
 
   // Game state (owned by Phaser, not React)
   private grid: GridCell[][] = [];
@@ -620,7 +616,7 @@ export class MainScene extends Phaser.Scene {
     };
   }
 
-  private depthFromSortPoint(
+  depthFromSortPoint(
     sortX: number,
     sortY: number,
     layerOffset: number = 0
@@ -1027,7 +1023,7 @@ export class MainScene extends Phaser.Scene {
       // Check if an old building was here
       const oldBuildingKey = `building_${x},${y}`;
       if (
-        this.buildingSprites.has(oldBuildingKey) &&
+        this.buildingRenderer.buildingSprites.has(oldBuildingKey) &&
         (cell.type !== TileType.Building || !cell.isOrigin)
       ) {
         buildingsToRemove.add(oldBuildingKey);
@@ -1052,7 +1048,7 @@ export class MainScene extends Phaser.Scene {
 
     // Remove old buildings and their glows (including slices)
     for (const key of buildingsToRemove) {
-      this.removeBuildingSprites(key);
+      this.buildingRenderer.removeBuildingSprites(key);
     }
 
     // Render new/changed buildings
@@ -1064,8 +1060,8 @@ export class MainScene extends Phaser.Scene {
       if (cell?.buildingId) {
         // Remove old sprite and glow if exists (including slices)
         const buildingKey = `building_${x},${y}`;
-        this.removeBuildingSprites(buildingKey);
-        this.renderBuilding(x, y, cell.buildingId, cell.buildingOrientation);
+        this.buildingRenderer.removeBuildingSprites(buildingKey);
+        this.buildingRenderer.renderBuilding(this, x, y, cell.buildingId, cell.buildingOrientation);
       }
     }
 
@@ -1650,10 +1646,7 @@ export class MainScene extends Phaser.Scene {
     // Initial full render
     this.tileSprites.forEach((sprite) => sprite.destroy());
     this.tileSprites.clear();
-    this.buildingSprites.forEach((sprite) => sprite.destroy());
-    this.buildingSprites.clear();
-    this.glowSprites.forEach((sprite) => sprite.destroy());
-    this.glowSprites.clear();
+    this.buildingRenderer.clearAll();
 
     for (let y = 0; y < GRID_HEIGHT; y++) {
       for (let x = 0; x < GRID_WIDTH; x++) {
@@ -1715,365 +1708,10 @@ export class MainScene extends Phaser.Scene {
           cell.isOrigin &&
           cell.buildingId
         ) {
-          this.renderBuilding(x, y, cell.buildingId, cell.buildingOrientation);
+          this.buildingRenderer.renderBuilding(this, x, y, cell.buildingId, cell.buildingOrientation);
         }
       }
     }
-  }
-
-  // Remove a building and all its vertical slices (see renderBuilding for slice docs)
-  // Buildings are stored as: "building_X,Y" (main) + "building_X,Y_s1", "_s2", etc. (slices)
-  private removeBuildingSprites(buildingKey: string): void {
-    // Remove main sprite
-    const sprite = this.buildingSprites.get(buildingKey);
-    if (sprite) {
-      sprite.destroy();
-      this.buildingSprites.delete(buildingKey);
-    }
-
-    // Remove all slices (up to 20 should be more than enough)
-    for (let i = 1; i < 20; i++) {
-      const sliceKey = `${buildingKey}_s${i}`;
-      const sliceSprite = this.buildingSprites.get(sliceKey);
-      if (sliceSprite) {
-        sliceSprite.destroy();
-        this.buildingSprites.delete(sliceKey);
-      } else {
-        break; // No more slices
-      }
-    }
-
-    // Remove glow if exists
-    const glow = this.glowSprites.get(buildingKey);
-    if (glow) {
-      glow.destroy();
-      this.glowSprites.delete(buildingKey);
-    }
-  }
-
-  private renderBuilding(
-    originX: number,
-    originY: number,
-    buildingId: string,
-    orientation?: Direction
-  ): void {
-    const building = getBuilding(buildingId);
-    if (!building) {
-      console.warn(`Building not found in registry: ${buildingId}`);
-      return;
-    }
-
-    const key = `building_${originX},${originY}`;
-    const textureKey = this.getBuildingTextureKey(building, orientation);
-
-    if (!this.textures.exists(textureKey)) {
-      console.warn(`Texture not found: ${textureKey}`);
-      return;
-    }
-
-    // Get footprint based on orientation (for positioning)
-    const footprint = getBuildingFootprint(building, orientation);
-    // Get render size for slicing (use renderSize if available, else footprint)
-    const renderSize = building.renderSize || footprint;
-    const frontX = originX + footprint.width - 1;
-    const frontY = originY + footprint.height - 1;
-    const screenPos = this.gridToScreen(frontX, frontY);
-    const bottomY = screenPos.y + TILE_HEIGHT;
-
-    // Calculate tint for props (needed for each slice)
-    let tint: number | null = null;
-    if (buildingId === "flower-bush") {
-      tint = 0xbbddbb;
-    }
-
-    // ========================================================================
-    // DEPTH LAYER SYSTEM - Layer offsets for correct render ordering
-    // ========================================================================
-    //
-    // Depth formula: sortY * 10000 + sortX + layerOffset
-    //
-    // Layer offsets control render order for items at the same grid position:
-    //   0.00 - Ground tiles (grass, road, asphalt)
-    //   0.04 - Lamp glow effects (behind lamps)
-    //   0.05 - Buildings (regular structures)
-    //   0.06 - Extended decorations (trees with foliage beyond footprint)
-    //   0.10 - Cars
-    //   0.20 - Characters
-    //
-    // FUTURE: When adding fences, traffic lights, etc., use this render order:
-    //   1. Back-left fence   (layer ~0.03, before building)
-    //   2. Back-right fence  (layer ~0.03, before building)
-    //   3. Building          (layer 0.05)
-    //   4. Props/trees       (layer 0.06)
-    //   5. Front-left fence  (layer ~0.07, after building/props)
-    //   6. Front-right fence (layer ~0.07, after building/props)
-    //
-    // FENCES: Determine which edge of the tile the fence is on (N, S, E, W)
-    //   - Back edges (N, W in isometric) render BEFORE the building
-    //   - Front edges (S, E in isometric) render AFTER the building
-    //   - Use the tile's grid position for depth, with appropriate layer offset
-    //
-    // TRAFFIC LIGHTS: These are tricky because they overhang the road!
-    //   - The pole sits on one tile (e.g., corner of intersection)
-    //   - The overhang/light extends over an adjacent road tile
-    //   - Cars need to pass UNDER the overhang, not behind it
-    //
-    //   Solution: Slice the traffic light into TWO parts with different depths:
-    //   1. POLE portion: Use the pole's actual tile position for depth
-    //      - Renders normally based on where it's planted
-    //   2. OVERHANG portion: Use the ROAD tile's position for depth anchor
-    //      - This makes cars on that road tile render BEHIND the overhang
-    //      - The overhang slice depth = road tile's depth + small offset (~0.09)
-    //      - Cars have layer 0.10, so they appear UNDER the light
-    //
-    //   Example: Traffic light at (5,5) with overhang over road at (6,5)
-    //   - Pole slice: depth based on grid (5,5)
-    //   - Overhang slice: depth based on grid (6,5) + 0.09 layer offset
-    //   - Car on (6,5): depth based on grid (6,5) + 0.10 layer offset
-    //   - Result: pole -> overhang -> car (overhang appears above car!)
-    //
-    // ========================================================================
-
-    // Check if this is a decoration with visual extending beyond footprint (like trees)
-    // For these, we use uniform depth for all slices to prevent clipping by adjacent buildings
-    const isExtendedDecoration =
-      building.isDecoration &&
-      building.renderSize &&
-      (building.renderSize.width > footprint.width ||
-        building.renderSize.height > footprint.height);
-
-    // Pre-calculate depth for extended decorations (trees with foliage beyond footprint)
-    // Use footprint position + 1/4 the render extension as a balanced middle ground:
-    // - Not too far back (would get clipped by nearby buildings)
-    // - Not too far forward (would render over buildings in front)
-    const extendX = (renderSize.width - footprint.width) / 4;
-    const extendY = (renderSize.height - footprint.height) / 4;
-    const balancedFrontX = frontX + extendX;
-    const balancedFrontY = frontY + extendY;
-    const balancedGridSum = balancedFrontX + balancedFrontY;
-    const balancedScreenY = GRID_OFFSET_Y + (balancedGridSum * TILE_HEIGHT) / 2;
-    const decorationDepth = this.depthFromSortPoint(
-      screenPos.x,
-      balancedScreenY + TILE_HEIGHT / 2,
-      0.06
-    );
-
-    // ========================================================================
-    // VERTICAL SLICE RENDERING FOR CORRECT ISOMETRIC DEPTH SORTING
-    // ========================================================================
-    //
-    // Problem: In isometric view, a single building sprite can't have one depth
-    // value because characters/props walking through the building's footprint
-    // need to appear IN FRONT of some parts and BEHIND others.
-    //
-    // Solution: Slice the building sprite into vertical strips. Each strip
-    // corresponds to one "diagonal" of tiles and gets its own depth value.
-    //
-    // Building sprites are 512x512 with the front corner at (256, 512).
-    // Tiles are 44px wide in screen space, so each diagonal is 22px offset.
-    //
-    // For a 4x4 building (width=4, height=4), we create 8 slices:
-    //   - 4 LEFT slices (for width): tiles going WEST from front corner
-    //   - 4 RIGHT slices (for height): tiles going NORTH from front corner
-    //
-    //   Sprite layout (512px wide):
-    //   ┌────────────────────────────────────────────────────────────────┐
-    //   │                        BUILDING                                │
-    //   │                                                                │
-    //   │  ←── LEFT slices ──→│←── RIGHT slices ──→                     │
-    //   │  (width tiles)      │ (height tiles)                          │
-    //   │                     │                                          │
-    //   │  srcX: 168 190 212 234 256 278 300 322                        │
-    //   │        ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓                          │
-    //   │        [4] [3] [2] [1] [1] [2] [3] [4]  ← depth offset        │
-    //   │                     ↑                                          │
-    //   │               FRONT CORNER (256)                               │
-    //   └────────────────────────────────────────────────────────────────┘
-    //
-    // Depth: Each slice's depth = what it would be if a 1x1 tile existed there.
-    // This allows characters to correctly interleave with building parts.
-    // ========================================================================
-
-    const SLICE_WIDTH = 22; // Half tile width - isometric diagonal offset
-    const SPRITE_CENTER = 256; // Front corner X in sprite space
-    const SPRITE_HEIGHT = 512;
-
-    let sliceIndex = 0;
-
-    // LEFT slices: cover tiles going WEST from front corner (decreasing grid X)
-    // i=0 is closest to center (frontmost depth), i=width-1 is furthest left (backmost)
-    // Use renderSize for slicing (visual size), not footprint (collision size)
-    for (let i = 0; i < renderSize.width; i++) {
-      const srcX = SPRITE_CENTER - (i + 1) * SLICE_WIDTH;
-
-      const slice = this.add.image(screenPos.x, bottomY, textureKey);
-      slice.setOrigin(0.5, 1);
-      slice.setCrop(srcX, 0, SLICE_WIDTH, SPRITE_HEIGHT);
-
-      if (tint !== null) {
-        slice.setTint(tint);
-      }
-
-      // Depth: For extended decorations (like trees), use uniform footprint-based depth
-      // to prevent clipping. For regular buildings, calculate per-slice depth.
-      if (isExtendedDecoration) {
-        slice.setDepth(decorationDepth);
-      } else {
-        // This slice represents tile column (frontX - i)
-        // Frontmost tile in this column is at (frontX - i, frontY)
-        // gridSum = (frontX - i) + frontY
-        const sliceGridSum = frontX - i + frontY;
-        const sliceScreenY = GRID_OFFSET_Y + (sliceGridSum * TILE_HEIGHT) / 2;
-        slice.setDepth(
-          this.depthFromSortPoint(
-            screenPos.x,
-            sliceScreenY + TILE_HEIGHT / 2,
-            0.05
-          )
-        );
-      }
-
-      if (sliceIndex === 0) {
-        this.buildingSprites.set(key, slice);
-      } else {
-        this.buildingSprites.set(`${key}_s${sliceIndex}`, slice);
-      }
-      sliceIndex++;
-    }
-
-    // RIGHT slices: cover tiles going NORTH from front corner (decreasing grid Y)
-    // i=0 is at center (frontmost depth), i=height-1 is furthest right (backmost)
-    // Use renderSize for slicing (visual size), not footprint (collision size)
-    for (let i = 0; i < renderSize.height; i++) {
-      const srcX = SPRITE_CENTER + i * SLICE_WIDTH;
-
-      const slice = this.add.image(screenPos.x, bottomY, textureKey);
-      slice.setOrigin(0.5, 1);
-      slice.setCrop(srcX, 0, SLICE_WIDTH, SPRITE_HEIGHT);
-
-      if (tint !== null) {
-        slice.setTint(tint);
-      }
-
-      // Depth: For extended decorations (like trees), use uniform footprint-based depth
-      // to prevent clipping. For regular buildings, calculate per-slice depth.
-      if (isExtendedDecoration) {
-        slice.setDepth(decorationDepth);
-      } else {
-        // This slice represents tile row (frontY - i)
-        // Frontmost tile in this row is at (frontX, frontY - i)
-        // gridSum = frontX + (frontY - i)
-        const sliceGridSum = frontX + frontY - i;
-        const sliceScreenY = GRID_OFFSET_Y + (sliceGridSum * TILE_HEIGHT) / 2;
-        slice.setDepth(
-          this.depthFromSortPoint(
-            screenPos.x,
-            sliceScreenY + TILE_HEIGHT / 2,
-            0.05
-          )
-        );
-      }
-
-      this.buildingSprites.set(`${key}_s${sliceIndex}`, slice);
-      sliceIndex++;
-    }
-
-    // Add glow effect for christmas lamps
-    if (buildingId === "christmas-lamp") {
-      this.addLampGlow(key, screenPos.x, screenPos.y);
-    }
-  }
-
-  private addLampGlow(key: string, x: number, tileY: number): void {
-    // Position glow at lampshade height (offset up from tile)
-    const lampshadeOffsetY = -45; // Pixels above the tile base
-    const glowY = tileY + TILE_HEIGHT / 2 + lampshadeOffsetY;
-
-    // Create pixelated glow texture if it doesn't exist
-    if (!this.textures.exists("lamp_glow")) {
-      this.createPixelatedGlowTexture();
-    }
-
-    // Create glow sprite using the pixelated texture
-    const glow = this.add.image(x, glowY, "lamp_glow");
-    glow.setBlendMode(Phaser.BlendModes.ADD);
-    glow.setDepth(this.depthFromSortPoint(x, tileY + TILE_HEIGHT / 2, 0.04)); // Just behind lamp
-
-    // Add subtle pulsing animation
-    this.tweens.add({
-      targets: glow,
-      alpha: { from: 0.7, to: 1.0 },
-      duration: 2000,
-      yoyo: true,
-      repeat: -1,
-      ease: "Sine.easeInOut",
-    });
-
-    this.glowSprites.set(key, glow);
-  }
-
-  private createPixelatedGlowTexture(): void {
-    const size = 96; // Larger texture size
-    const graphics = this.make.graphics({ x: 0, y: 0 });
-
-    // Create pixelated rings with subtle fading opacity (from center out)
-    const rings = [
-      { radius: 6, alpha: 0.15 },
-      { radius: 12, alpha: 0.12 },
-      { radius: 20, alpha: 0.08 },
-      { radius: 30, alpha: 0.05 },
-      { radius: 40, alpha: 0.03 },
-      { radius: 48, alpha: 0.015 },
-    ];
-
-    const centerX = size / 2;
-    const centerY = size / 2;
-    const glowColor = 0xffcc66; // Warm yellow-orange
-
-    // Draw rings from outside in so inner ones overlap
-    for (let i = rings.length - 1; i >= 0; i--) {
-      const ring = rings[i];
-      graphics.fillStyle(glowColor, ring.alpha);
-
-      // Draw pixelated diamond/square shape for isometric style
-      const r = ring.radius;
-      graphics.beginPath();
-      graphics.moveTo(centerX, centerY - r); // Top
-      graphics.lineTo(centerX + r, centerY); // Right
-      graphics.lineTo(centerX, centerY + r); // Bottom
-      graphics.lineTo(centerX - r, centerY); // Left
-      graphics.closePath();
-      graphics.fillPath();
-    }
-
-    // Generate texture from graphics
-    graphics.generateTexture("lamp_glow", size, size);
-    graphics.destroy();
-  }
-
-  private getBuildingTextureKey(
-    building: BuildingDefinition,
-    orientation?: Direction
-  ): string {
-    const dirMap: Record<Direction, string> = {
-      [Direction.Down]: "south",
-      [Direction.Up]: "north",
-      [Direction.Left]: "west",
-      [Direction.Right]: "east",
-    };
-
-    const dir = orientation ? dirMap[orientation] : "south";
-
-    if (building.sprites[dir as keyof typeof building.sprites]) {
-      return `${building.id}_${dir}`;
-    }
-
-    if (building.sprites.south) {
-      return `${building.id}_south`;
-    }
-
-    const firstDir = Object.keys(building.sprites)[0];
-    return `${building.id}_${firstDir}`;
   }
 
   private renderCars(): void {
@@ -2231,523 +1869,25 @@ export class MainScene extends Phaser.Scene {
     return `${charType}_${dirMap[direction]}`;
   }
 
+
   private clearPreview(): void {
-    this.previewSprites.forEach((s) => s.destroy());
-    this.previewSprites = [];
-    this.lotPreviewSprites.forEach((s) => s.destroy());
-    this.lotPreviewSprites = [];
+    this.previewSystem.clear();
   }
 
   private updatePreview(): void {
-    this.clearPreview();
-
-    if (!this.hoverTile) return;
-    if (this.selectedTool === ToolType.None) return;
-
-    const { x, y } = this.hoverTile;
-
-    if (this.selectedTool === ToolType.RoadNetwork) {
-      // Get segments to preview - either drag set or just hover segment
-      const segmentsToPreview: Array<{ x: number; y: number }> = [];
-      if (this.isDragging && this.dragTiles.size > 0) {
-        // When dragging, show preview for all segments in drag set
-        this.dragTiles.forEach((key) => {
-          const [segX, segY] = key.split(",").map(Number);
-          segmentsToPreview.push({ x: segX, y: segY });
-        });
-      } else if (x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT) {
-        // Single hover - show preview for hovered segment
-        const segmentOrigin = getRoadSegmentOrigin(x, y);
-        segmentsToPreview.push({ x: segmentOrigin.x, y: segmentOrigin.y });
-      }
-
-      for (const seg of segmentsToPreview) {
-        const segmentOrigin = { x: seg.x, y: seg.y };
-        const placementCheck = canPlaceRoadSegment(
-          this.grid,
-          segmentOrigin.x,
-          segmentOrigin.y
-        );
-        const segmentHasCollision = !placementCheck.valid;
-
-        const tempGrid: GridCell[][] = this.grid.map((row) =>
-          row.map((cell) => ({ ...cell }))
-        );
-
-        for (let dy = 0; dy < ROAD_SEGMENT_SIZE; dy++) {
-          for (let dx = 0; dx < ROAD_SEGMENT_SIZE; dx++) {
-            const px = segmentOrigin.x + dx;
-            const py = segmentOrigin.y + dy;
-            if (px < GRID_WIDTH && py < GRID_HEIGHT) {
-              tempGrid[py][px].isOrigin = dx === 0 && dy === 0;
-              tempGrid[py][px].originX = segmentOrigin.x;
-              tempGrid[py][px].originY = segmentOrigin.y;
-              tempGrid[py][px].type = TileType.Road;
-            }
-          }
-        }
-
-        const connections = getRoadConnections(
-          tempGrid,
-          segmentOrigin.x,
-          segmentOrigin.y
-        );
-        const segmentType = getSegmentType(connections);
-        const pattern = generateRoadPattern(segmentType);
-
-        for (const tile of pattern) {
-          const px = segmentOrigin.x + tile.dx;
-          const py = segmentOrigin.y + tile.dy;
-          if (px < GRID_WIDTH && py < GRID_HEIGHT) {
-            const screenPos = this.gridToScreen(px, py);
-            const textureKey =
-              tile.type === TileType.Asphalt ? "asphalt" : "road";
-            const preview = this.add.image(
-              screenPos.x,
-              screenPos.y,
-              textureKey
-            );
-            preview.setOrigin(0.5, 0);
-            preview.setAlpha(segmentHasCollision ? 0.3 : 0.7);
-            if (segmentHasCollision) preview.setTint(0xff0000);
-            preview.setDepth(
-              this.depthFromSortPoint(screenPos.x, screenPos.y, 1_000_000)
-            );
-            this.previewSprites.push(preview);
-          }
-        }
-      }
-    } else if (this.selectedTool === ToolType.Tile) {
-      // Get tiles to preview - either drag set or just hover tile
-      const tilesToPreview: Array<{ x: number; y: number }> = [];
-      if (this.isDragging && this.dragTiles.size > 0) {
-        this.dragTiles.forEach((key) => {
-          const [tx, ty] = key.split(",").map(Number);
-          tilesToPreview.push({ x: tx, y: ty });
-        });
-      } else if (x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT) {
-        tilesToPreview.push({ x, y });
-      }
-
-      for (const tile of tilesToPreview) {
-        const tx = tile.x;
-        const ty = tile.y;
-        if (tx >= 0 && tx < GRID_WIDTH && ty >= 0 && ty < GRID_HEIGHT) {
-          const cell = this.grid[ty]?.[tx];
-          // Allow placing tile on grass, snow, or under decorations
-          let hasCollision = false;
-          if (cell) {
-            if (cell.type === TileType.Building && cell.buildingId) {
-              const existingBuilding = getBuilding(cell.buildingId);
-              hasCollision =
-                !existingBuilding ||
-                (!existingBuilding.isDecoration &&
-                  existingBuilding.category !== "props");
-            } else if (
-              cell.type !== TileType.Grass &&
-              cell.type !== TileType.Snow
-            ) {
-              hasCollision = true;
-            }
-          }
-          const screenPos = this.gridToScreen(tx, ty);
-          const preview = this.add.image(screenPos.x, screenPos.y, "road");
-          preview.setOrigin(0.5, 0);
-          preview.setAlpha(hasCollision ? 0.3 : 0.7);
-          if (hasCollision) preview.setTint(0xff0000);
-          preview.setDepth(
-            this.depthFromSortPoint(screenPos.x, screenPos.y, 1_000_000)
-          );
-          this.previewSprites.push(preview);
-        }
-      }
-    } else if (this.selectedTool === ToolType.Asphalt) {
-      // Get tiles to preview - either drag set or just hover tile
-      const tilesToPreview: Array<{ x: number; y: number }> = [];
-      if (this.isDragging && this.dragTiles.size > 0) {
-        this.dragTiles.forEach((key) => {
-          const [tx, ty] = key.split(",").map(Number);
-          tilesToPreview.push({ x: tx, y: ty });
-        });
-      } else if (x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT) {
-        tilesToPreview.push({ x, y });
-      }
-
-      for (const tile of tilesToPreview) {
-        const tx = tile.x;
-        const ty = tile.y;
-        if (tx >= 0 && tx < GRID_WIDTH && ty >= 0 && ty < GRID_HEIGHT) {
-          const cell = this.grid[ty]?.[tx];
-          // Allow placing asphalt on grass, snow, tile, or under decorations
-          let hasCollision = false;
-          if (cell) {
-            if (cell.type === TileType.Building && cell.buildingId) {
-              const existingBuilding = getBuilding(cell.buildingId);
-              hasCollision =
-                !existingBuilding ||
-                (!existingBuilding.isDecoration &&
-                  existingBuilding.category !== "props");
-            } else if (
-              cell.type !== TileType.Grass &&
-              cell.type !== TileType.Snow &&
-              cell.type !== TileType.Tile
-            ) {
-              hasCollision = true;
-            }
-          }
-          const screenPos = this.gridToScreen(tx, ty);
-          const preview = this.add.image(screenPos.x, screenPos.y, "asphalt");
-          preview.setOrigin(0.5, 0);
-          preview.setAlpha(hasCollision ? 0.3 : 0.7);
-          if (hasCollision) preview.setTint(0xff0000);
-          preview.setDepth(
-            this.depthFromSortPoint(screenPos.x, screenPos.y, 1_000_000)
-          );
-          this.previewSprites.push(preview);
-        }
-      }
-    } else if (this.selectedTool === ToolType.Snow) {
-      // Get tiles to preview - either drag set or just hover tile
-      const tilesToPreview: Array<{ x: number; y: number }> = [];
-      if (this.isDragging && this.dragTiles.size > 0) {
-        this.dragTiles.forEach((key) => {
-          const [tx, ty] = key.split(",").map(Number);
-          tilesToPreview.push({ x: tx, y: ty });
-        });
-      } else if (x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT) {
-        tilesToPreview.push({ x, y });
-      }
-
-      for (const tile of tilesToPreview) {
-        const tx = tile.x;
-        const ty = tile.y;
-        if (tx >= 0 && tx < GRID_WIDTH && ty >= 0 && ty < GRID_HEIGHT) {
-          const cell = this.grid[ty]?.[tx];
-          // Allow placing snow on grass, tile, or under decorations
-          let hasCollision = false;
-          if (cell) {
-            if (cell.type === TileType.Building && cell.buildingId) {
-              const existingBuilding = getBuilding(cell.buildingId);
-              hasCollision =
-                !existingBuilding ||
-                (!existingBuilding.isDecoration &&
-                  existingBuilding.category !== "props");
-            } else if (
-              cell.type !== TileType.Grass &&
-              cell.type !== TileType.Tile
-            ) {
-              hasCollision = true;
-            }
-          }
-          const screenPos = this.gridToScreen(tx, ty);
-          const preview = this.add.image(
-            screenPos.x,
-            screenPos.y,
-            getSnowTextureKey(tx, ty)
-          );
-          preview.setOrigin(0.5, 0);
-          preview.setScale(0.5); // Snow tiles are 88x44, need to halve
-          preview.setAlpha(hasCollision ? 0.3 : 0.7);
-          if (hasCollision) preview.setTint(0xff0000);
-          preview.setDepth(
-            this.depthFromSortPoint(screenPos.x, screenPos.y, 1_000_000)
-          );
-          this.previewSprites.push(preview);
-        }
-      }
-    } else if (
-      this.selectedTool === ToolType.Building &&
-      this.selectedBuildingId
-    ) {
-      const building = getBuilding(this.selectedBuildingId);
-      if (!building) return;
-
-      // Get footprint based on current orientation
-      const footprint = getBuildingFootprint(
-        building,
-        this.buildingOrientation
-      );
-      const originX = x - footprint.width + 1;
-      const originY = y - footprint.height + 1;
-
-      const isDecoration =
-        building.category === "props" || building.isDecoration;
-      let footprintCollision = false;
-      for (let dy = 0; dy < footprint.height; dy++) {
-        for (let dx = 0; dx < footprint.width; dx++) {
-          const tileX = originX + dx;
-          const tileY = originY + dy;
-          if (
-            tileX < 0 ||
-            tileY < 0 ||
-            tileX >= GRID_WIDTH ||
-            tileY >= GRID_HEIGHT
-          ) {
-            footprintCollision = true;
-          } else {
-            const cell = this.grid[tileY]?.[tileX];
-            if (cell) {
-              const cellType = cell.type;
-              if (isDecoration) {
-                // Props/decorations collide with any building (including other props)
-                if (cellType === TileType.Building) {
-                  footprintCollision = true;
-                } else if (
-                  cellType !== TileType.Grass &&
-                  cellType !== TileType.Tile &&
-                  cellType !== TileType.Snow
-                ) {
-                  footprintCollision = true;
-                }
-              } else {
-                if (cellType !== TileType.Grass) {
-                  footprintCollision = true;
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Only show lot tiles for non-decorative buildings (decorations preserve underlying tile)
-      if (!isDecoration) {
-        for (let dy = 0; dy < footprint.height; dy++) {
-          for (let dx = 0; dx < footprint.width; dx++) {
-            const tileX = originX + dx;
-            const tileY = originY + dy;
-            if (
-              tileX >= 0 &&
-              tileY >= 0 &&
-              tileX < GRID_WIDTH &&
-              tileY < GRID_HEIGHT
-            ) {
-              const screenPos = this.gridToScreen(tileX, tileY);
-              const lotTile = this.add.image(screenPos.x, screenPos.y, "road");
-              lotTile.setOrigin(0.5, 0);
-              lotTile.setAlpha(footprintCollision ? 0.3 : 0.5);
-              if (footprintCollision) lotTile.setTint(0xff0000);
-              lotTile.setDepth(
-                this.depthFromSortPoint(screenPos.x, screenPos.y, 1_000_000)
-              );
-              this.previewSprites.push(lotTile);
-            }
-          }
-        }
-      }
-
-      // Always show building preview, but tint red if collision
-      const textureKey = this.getBuildingTextureKey(
-        building,
-        this.buildingOrientation
-      );
-      if (this.textures.exists(textureKey)) {
-        const frontX = originX + footprint.width - 1;
-        const frontY = originY + footprint.height - 1;
-        const screenPos = this.gridToScreen(frontX, frontY);
-        const bottomY = screenPos.y + TILE_HEIGHT;
-        const frontGroundY = screenPos.y + TILE_HEIGHT / 2;
-
-        const buildingPreview = this.add.image(
-          screenPos.x,
-          bottomY,
-          textureKey
-        );
-        buildingPreview.setOrigin(0.5, 1);
-        buildingPreview.setAlpha(0.7);
-
-        // Apply red tint if collision, otherwise apply prop tints
-        if (footprintCollision) {
-          buildingPreview.setTint(0xff0000); // Red tint for invalid placement
-        } else if (this.selectedBuildingId === "flower-bush") {
-          buildingPreview.setTint(0xbbddbb);
-        }
-
-        buildingPreview.setDepth(
-          this.depthFromSortPoint(screenPos.x, frontGroundY, 1_000_000)
-        );
-        this.previewSprites.push(buildingPreview);
-      }
-    } else if (this.selectedTool === ToolType.Eraser) {
-      // Get tiles to preview - either drag set or just hover tile
-      const tilesToPreview: Array<{ x: number; y: number }> = [];
-      if (this.isDragging && this.dragTiles.size > 0) {
-        this.dragTiles.forEach((key) => {
-          const [tx, ty] = key.split(",").map(Number);
-          tilesToPreview.push({ x: tx, y: ty });
-        });
-      } else {
-        tilesToPreview.push({ x, y });
-      }
-
-      // Track which tiles we've already shown preview for (to avoid duplicates)
-      const previewedTiles = new Set<string>();
-
-      for (const tile of tilesToPreview) {
-        const tx = tile.x;
-        const ty = tile.y;
-        if (tx < 0 || tx >= GRID_WIDTH || ty < 0 || ty >= GRID_HEIGHT) continue;
-
-        const cell = this.grid[ty]?.[tx];
-
-        if (!cell || cell.type === TileType.Grass) {
-          // Show faded red grass for empty tiles
-          if (!previewedTiles.has(`${tx},${ty}`)) {
-            previewedTiles.add(`${tx},${ty}`);
-            const screenPos = this.gridToScreen(tx, ty);
-            const preview = this.add.image(screenPos.x, screenPos.y, "grass");
-            preview.setOrigin(0.5, 0);
-            preview.setAlpha(0.3);
-            preview.setTint(0xff0000);
-            preview.setDepth(
-              this.depthFromSortPoint(screenPos.x, screenPos.y, 1_000_000)
-            );
-            this.previewSprites.push(preview);
-          }
-        } else {
-          // For non-grass tiles, show the whole object (building/road segment)
-          const originX = cell.originX ?? tx;
-          const originY = cell.originY ?? ty;
-          const cellType = cell.type;
-
-          // Check if this is a road segment
-          const isRoadSegment =
-            originX % ROAD_SEGMENT_SIZE === 0 &&
-            originY % ROAD_SEGMENT_SIZE === 0 &&
-            (cellType === TileType.Road || cellType === TileType.Asphalt);
-
-          if (isRoadSegment) {
-            // Show entire road segment
-            for (let dy = 0; dy < ROAD_SEGMENT_SIZE; dy++) {
-              for (let dx = 0; dx < ROAD_SEGMENT_SIZE; dx++) {
-                const px = originX + dx;
-                const py = originY + dy;
-                if (
-                  px < GRID_WIDTH &&
-                  py < GRID_HEIGHT &&
-                  !previewedTiles.has(`${px},${py}`)
-                ) {
-                  previewedTiles.add(`${px},${py}`);
-                  const tileCell = this.grid[py]?.[px];
-                  if (tileCell && tileCell.type !== TileType.Grass) {
-                    const screenPos = this.gridToScreen(px, py);
-                    const textureKey =
-                      tileCell.type === TileType.Asphalt ? "asphalt" : "road";
-                    const preview = this.add.image(
-                      screenPos.x,
-                      screenPos.y,
-                      textureKey
-                    );
-                    preview.setOrigin(0.5, 0);
-                    preview.setAlpha(0.7);
-                    preview.setTint(0xff0000);
-                    preview.setDepth(
-                      this.depthFromSortPoint(
-                        screenPos.x,
-                        screenPos.y,
-                        1_000_000
-                      )
-                    );
-                    this.previewSprites.push(preview);
-                  }
-                }
-              }
-            }
-          } else if (cellType === TileType.Building && cell.buildingId) {
-            // Show entire building footprint
-            const building = getBuilding(cell.buildingId);
-            if (!building) continue;
-
-            const footprint = getBuildingFootprint(
-              building,
-              cell.buildingOrientation
-            );
-            const buildingKey = `building_${originX},${originY}`;
-
-            if (!previewedTiles.has(buildingKey)) {
-              previewedTiles.add(buildingKey);
-
-              for (let dy = 0; dy < footprint.height; dy++) {
-                for (let dx = 0; dx < footprint.width; dx++) {
-                  const px = originX + dx;
-                  const py = originY + dy;
-                  if (px < GRID_WIDTH && py < GRID_HEIGHT) {
-                    previewedTiles.add(`${px},${py}`);
-                    const screenPos = this.gridToScreen(px, py);
-                    const preview = this.add.image(
-                      screenPos.x,
-                      screenPos.y,
-                      "road"
-                    );
-                    preview.setOrigin(0.5, 0);
-                    preview.setAlpha(0.7);
-                    preview.setTint(0xff0000);
-                    preview.setDepth(
-                      this.depthFromSortPoint(
-                        screenPos.x,
-                        screenPos.y,
-                        1_000_000
-                      )
-                    );
-                    this.previewSprites.push(preview);
-                  }
-                }
-              }
-
-              // Show building sprite in red
-              const textureKey = this.getBuildingTextureKey(
-                building,
-                cell.buildingOrientation
-              );
-              if (this.textures.exists(textureKey)) {
-                const frontX = originX + footprint.width - 1;
-                const frontY = originY + footprint.height - 1;
-                const screenPos = this.gridToScreen(frontX, frontY);
-                const bottomY = screenPos.y + TILE_HEIGHT;
-                const frontGroundY = screenPos.y + TILE_HEIGHT / 2;
-
-                const buildingPreview = this.add.image(
-                  screenPos.x,
-                  bottomY,
-                  textureKey
-                );
-                buildingPreview.setOrigin(0.5, 1);
-                buildingPreview.setAlpha(0.7);
-                buildingPreview.setTint(0xff0000);
-                buildingPreview.setDepth(
-                  this.depthFromSortPoint(screenPos.x, frontGroundY, 1_000_000)
-                );
-                this.previewSprites.push(buildingPreview);
-              }
-            }
-          } else {
-            // Show single tile (snow, tile, etc.)
-            if (!previewedTiles.has(`${tx},${ty}`)) {
-              previewedTiles.add(`${tx},${ty}`);
-              const screenPos = this.gridToScreen(tx, ty);
-              let textureKey = "grass";
-              if (cellType === TileType.Asphalt) textureKey = "asphalt";
-              else if (cellType === TileType.Road || cellType === TileType.Tile)
-                textureKey = "road";
-              else if (cellType === TileType.Snow)
-                textureKey = getSnowTextureKey(tx, ty);
-              const preview = this.add.image(
-                screenPos.x,
-                screenPos.y,
-                textureKey
-              );
-              preview.setOrigin(0.5, 0);
-              // Snow tiles are 88x44, need to halve
-              if (textureKey.startsWith("snow_")) preview.setScale(0.5);
-              preview.setAlpha(0.7);
-              preview.setTint(0xff0000);
-              preview.setDepth(
-                this.depthFromSortPoint(screenPos.x, screenPos.y, 1_000_000)
-              );
-              this.previewSprites.push(preview);
-            }
-          }
-        }
-      }
-    }
+    this.previewSystem.update({
+      grid: this.grid,
+      hoverTile: this.hoverTile,
+      selectedTool: this.selectedTool,
+      selectedBuildingId: this.selectedBuildingId,
+      buildingOrientation: this.buildingOrientation,
+      isDragging: this.isDragging,
+      dragTiles: this.dragTiles,
+      add: this.add,
+      textures: this.textures,
+      gridToScreen: this.gridToScreen.bind(this),
+      depthFromSortPoint: this.depthFromSortPoint.bind(this),
+      getBuildingTextureKey: this.buildingRenderer.getBuildingTextureKey.bind(this.buildingRenderer),
+    });
   }
 }
