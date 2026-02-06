@@ -107,6 +107,7 @@ export class MainScene extends Phaser.Scene {
 
   // Scene ready flag
   private isReady: boolean = false;
+  getIsReady(): boolean { return this.isReady; }
 
   // GIF animations loaded flag
   private gifsLoaded: boolean = false;

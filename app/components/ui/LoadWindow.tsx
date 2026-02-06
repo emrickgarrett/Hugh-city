@@ -3,15 +3,7 @@
 import { useState, useEffect, useRef, useCallback, MouseEvent } from "react";
 import { playClickSound, playDoubleClickSound } from "@/app/utils/sounds";
 import Modal from "./Modal";
-
-interface GameSaveData {
-  grid: any[][];
-  characterCount: number;
-  carCount: number;
-  zoom?: number;
-  visualSettings?: any;
-  timestamp: number;
-}
+import { GameSaveData } from "@/app/components/game/types";
 
 interface LoadWindowProps {
   isVisible: boolean;
@@ -122,11 +114,27 @@ export default function LoadWindow({
 
   return (
     <div
-      className="rct-frame"
       style={{
-        position: "absolute",
-        left: position.x,
-        top: position.y,
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: "rgba(0, 0, 0, 0.4)",
+        zIndex: 1999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+      onClick={onClose}
+    >
+    <div
+      className="rct-frame"
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: "relative",
+        left: position.x - 100,
+        top: position.y - 100,
         width: 400,
         maxHeight: 500,
         display: "flex",
@@ -204,7 +212,7 @@ export default function LoadWindow({
                       whiteSpace: "nowrap",
                     }}
                   >
-                    {save.name}
+                    {(save.data as any).cityName ?? save.name}
                   </div>
                   <div
                     style={{
@@ -258,6 +266,7 @@ export default function LoadWindow({
         cancelText="Cancel"
         showCancel={true}
       />
+    </div>
     </div>
   );
 }
