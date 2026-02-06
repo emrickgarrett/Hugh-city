@@ -36,6 +36,7 @@ export interface BuildingDefinition {
   supportsRotation?: boolean;
   isDecoration?: boolean; // If true, preserves underlying tile (like props)
   economics?: BuildingEconomics; // Optional override, otherwise uses defaults
+  hasNightLight?: boolean; // If true, building gets a glow effect at night
 }
 
 // Helper to get the correct footprint for a building based on orientation
@@ -172,6 +173,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/3x4town_hall_west.png",
     },
     icon: "🏛️",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "christmas-clock-tower": {
@@ -186,6 +188,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/2x2clock_tower_west.png",
     },
     icon: "🕰️",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -201,6 +204,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/2x2christmas_cottage_west.png",
     },
     icon: "🏠",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -222,6 +226,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/2x3christmas_bakery_west.png",
     },
     icon: "🥐",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -243,6 +248,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/2x3christmas_gift_shop_west.png",
     },
     icon: "🎁",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -264,6 +270,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/2x3christmas_cafe_west.png",
     },
     icon: "☕",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -279,6 +286,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/2x2christmas_cafe_s_west.png",
     },
     icon: "☕",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -294,6 +302,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/4x4santas_workshop_west.png",
     },
     icon: "🎅",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -309,6 +318,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/4x4ice_skating_rink_east.png",
     },
     icon: "⛸️",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -330,6 +340,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/christmas/2x3toy_store_west.png",
     },
     icon: "🧸",
+    hasNightLight: true,
     supportsRotation: true,
   },
   checkers: {
@@ -344,6 +355,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/2x2checkers_west.png",
     },
     icon: "🍔",
+    hasNightLight: true,
     supportsRotation: true,
   },
   popeyes: {
@@ -358,6 +370,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/2x2popeyes_west.png",
     },
     icon: "🍗",
+    hasNightLight: true,
     supportsRotation: true,
   },
   dunkin: {
@@ -372,6 +385,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/2x2dunkin_west.png",
     },
     icon: "🍩",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "80s-apartment": {
@@ -420,6 +434,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/4x4bookstore_west.png",
     },
     icon: "📚",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "medium-apartments": {
@@ -516,6 +531,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/2x2martini_bar_west.png",
     },
     icon: "🍸",
+    hasNightLight: true,
     supportsRotation: true,
   },
   snowman: {
@@ -1042,6 +1058,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/6x6magicpath_office_west.png",
     },
     icon: "🏢",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "promptlayer-office": {
@@ -1062,6 +1079,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/3x2promptlayer_office_west.png",
     },
     icon: "🏢",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "general-intelligence-office": {
@@ -1082,6 +1100,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/3x4general_intelligence_office_west.png",
     },
     icon: "🏢",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "ease-health": {
@@ -1102,6 +1121,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/6x3ease_health_west.png",
     },
     icon: "🏥",
+    hasNightLight: true,
     supportsRotation: true,
   },
   // New civic/landmark buildings
@@ -1123,6 +1143,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/civic/3x6private_school_west.png",
     },
     icon: "🏫",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "schwab-mansion": {
@@ -1143,6 +1164,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/landmark/8x6schwab_mansion_west.png",
     },
     icon: "🏛️",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -1164,6 +1186,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/landmark/3x6carnagie_mansion_west.png",
     },
     icon: "🏛️",
+    hasNightLight: true,
     supportsRotation: true,
   },
   church: {
@@ -1178,6 +1201,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/landmark/6x6church_west.png",
     },
     icon: "⛪",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "mushroom-kingdom-castle": {
@@ -1198,6 +1222,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/landmark/5x6mushroom_kingdom_castle_west.png",
     },
     icon: "🏰",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -1213,6 +1238,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/landmark/6x6internet_archive_west.png",
     },
     icon: "📚",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "palo-alto-office-center": {
@@ -1233,6 +1259,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/5x6palo_alto_office_center_west.png",
     },
     icon: "🏢",
+    hasNightLight: true,
     supportsRotation: true,
   },
   "hp-house": {
@@ -1247,6 +1274,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/landmark/4x4hp_house_west.png",
     },
     icon: "🏠",
+    hasNightLight: true,
     supportsRotation: true,
     isDecoration: true,
   },
@@ -1268,6 +1296,7 @@ export const BUILDINGS: Record<string, BuildingDefinition> = {
       west: "/Building/commercial/8x6palo_alto_wide_office_west.png",
     },
     icon: "🏬",
+    hasNightLight: true,
     supportsRotation: true,
   },
 };

@@ -9,7 +9,6 @@ import {
   BuildingDefinition,
 } from "@/app/data/buildings";
 import { GRID_OFFSET_Y } from "../gameConfig";
-import { DEPTH_Y_MULT } from "../utils/constants";
 
 /**
  * Interface for the minimal scene access needed by BuildingRenderSystem.
@@ -35,6 +34,38 @@ export class BuildingRenderSystem {
   // Sprite containers (owned by this system, referenced from MainScene)
   readonly buildingSprites: Map<string, Phaser.GameObjects.Image> = new Map();
   readonly glowSprites: Map<string, Phaser.GameObjects.GameObject> = new Map();
+  // Track tweens so we can update their alpha range when glow intensity changes
+  private glowTweens: Map<string, Phaser.Tweens.Tween> = new Map();
+
+  // Day/night glow intensity (0 = off during day, 1 = full at night)
+  private glowIntensity: number = 1.0;
+
+  /**
+   * Update all glow sprite intensities based on day/night cycle.
+   * intensity: 0 = invisible (day), 1 = full brightness (night)
+   */
+  setGlowIntensity(intensity: number): void {
+    this.glowIntensity = intensity;
+
+    this.glowSprites.forEach((glow, key) => {
+      if (glow instanceof Phaser.GameObjects.Image) {
+        if (intensity <= 0.01) {
+          glow.setVisible(false);
+        } else {
+          glow.setVisible(true);
+          // Update the pulsing tween's alpha range based on intensity
+          const tween = this.glowTweens.get(key);
+          if (tween) {
+            // Scale the pulse range: full night = 0.7-1.0, half = 0.35-0.5
+            tween.updateTo("alpha", intensity, true);
+          } else {
+            // No tween, just set alpha directly
+            glow.setAlpha(intensity);
+          }
+        }
+      }
+    });
+  }
 
   /**
    * Get the texture key for a building based on its definition and orientation.
@@ -88,11 +119,16 @@ export class BuildingRenderSystem {
       }
     }
 
-    // Remove glow if exists
+    // Remove glow and its tween if exists
     const glow = this.glowSprites.get(buildingKey);
     if (glow) {
       glow.destroy();
       this.glowSprites.delete(buildingKey);
+    }
+    const tween = this.glowTweens.get(buildingKey);
+    if (tween) {
+      tween.destroy();
+      this.glowTweens.delete(buildingKey);
     }
   }
 
@@ -104,6 +140,8 @@ export class BuildingRenderSystem {
     this.buildingSprites.clear();
     this.glowSprites.forEach((sprite) => sprite.destroy());
     this.glowSprites.clear();
+    this.glowTweens.forEach((tween) => tween.destroy());
+    this.glowTweens.clear();
   }
 
   /**
@@ -342,24 +380,27 @@ export class BuildingRenderSystem {
       sliceIndex++;
     }
 
-    // Add glow effect for christmas lamps
-    if (buildingId === "christmas-lamp") {
-      this.addLampGlow(scene, key, screenPos.x, screenPos.y);
+    // Add glow effect for christmas lamps and buildings with night lights
+    if (buildingId === "christmas-lamp" || building.hasNightLight) {
+      // Use a larger glow for bigger buildings
+      const glowScale = Math.max(footprint.width, footprint.height) >= 4 ? 2.0 : 1.0;
+      const glowOffsetY = buildingId === "christmas-lamp" ? -45 : -30 * glowScale;
+      this.addBuildingGlow(scene, key, screenPos.x, screenPos.y, glowOffsetY, glowScale);
     }
   }
 
   /**
-   * Add a warm glow effect for christmas lamp buildings.
+   * Add a warm glow effect to a building (lamps, commercial, landmarks, etc.)
    */
-  private addLampGlow(
+  private addBuildingGlow(
     scene: BuildingRenderSceneAccess,
     key: string,
     x: number,
-    tileY: number
+    tileY: number,
+    offsetY: number,
+    scale: number
   ): void {
-    // Position glow at lampshade height (offset up from tile)
-    const lampshadeOffsetY = -45; // Pixels above the tile base
-    const glowY = tileY + TILE_HEIGHT / 2 + lampshadeOffsetY;
+    const glowY = tileY + TILE_HEIGHT / 2 + offsetY;
 
     // Create pixelated glow texture if it doesn't exist
     if (!scene.textures.exists("lamp_glow")) {
@@ -369,19 +410,27 @@ export class BuildingRenderSystem {
     // Create glow sprite using the pixelated texture
     const glow = scene.add.image(x, glowY, "lamp_glow");
     glow.setBlendMode(Phaser.BlendModes.ADD);
-    glow.setDepth(scene.depthFromSortPoint(x, tileY + TILE_HEIGHT / 2, 0.04)); // Just behind lamp
+    glow.setScale(scale);
+    glow.setDepth(scene.depthFromSortPoint(x, tileY + TILE_HEIGHT / 2, 0.04));
 
-    // Add subtle pulsing animation
-    scene.tweens.add({
+    // Apply current glow intensity (may be 0 during daytime)
+    const intensity = this.glowIntensity;
+    if (intensity <= 0.01) {
+      glow.setVisible(false);
+    }
+
+    // Add subtle pulsing animation — alpha scales with day/night intensity
+    const tween = scene.tweens.add({
       targets: glow,
-      alpha: { from: 0.7, to: 1.0 },
-      duration: 2000,
+      alpha: { from: 0.7 * intensity, to: 1.0 * intensity },
+      duration: 2000 + Math.random() * 500, // Slight variation so glows aren't synchronized
       yoyo: true,
       repeat: -1,
       ease: "Sine.easeInOut",
     });
 
     this.glowSprites.set(key, glow);
+    this.glowTweens.set(key, tween);
   }
 
   /**

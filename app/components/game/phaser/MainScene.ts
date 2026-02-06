@@ -1580,6 +1580,17 @@ export class MainScene extends Phaser.Scene {
     this.currentGameTime = time;
   }
 
+  setDayNightState(state: { skyColor: string; glowIntensity: number; phase: string }): void {
+    // Update Phaser background color (sky)
+    if (this.isReady) {
+      const hexNum = parseInt(state.skyColor.replace("#", ""), 16);
+      this.cameras.main.setBackgroundColor(hexNum);
+    }
+
+    // Update glow intensity on all building glow sprites
+    this.buildingRenderer.setGlowIntensity(state.glowIntensity);
+  }
+
   getBuildingResidentCount(originX: number, originY: number): number {
     const buildingKey = `${originX},${originY}`;
     const residents = this.buildingOccupancy.get(buildingKey);

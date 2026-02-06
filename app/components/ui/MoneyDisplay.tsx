@@ -27,7 +27,7 @@ export default function MoneyDisplay({ money }: MoneyDisplayProps) {
         background: GRAY_COLORS.bg,
         border: "2px solid",
         borderColor: `${GRAY_COLORS.borderLight} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderLight}`,
-        borderTop: "none",
+        borderTopWidth: 0,
         padding: "8px 12px",
         minWidth: 140,
         height: 48,
