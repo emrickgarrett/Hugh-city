@@ -9,9 +9,15 @@ This is a foundation for building isometric strategy games—city builders, tyco
 - **Isometric Rendering** - Classic 2:1 isometric projection with proper depth sorting
 - **Building System** - Place multi-tile buildings with 4-direction rotation support
 - **Road Network** - Auto-connecting roads with proper intersection handling
-- **Animated Characters** - GIF-based walking animations in 4 directions
-- **Vehicles** - Cars that drive along roads
-- **Save/Load** - Persist your city to localStorage
+- **Animated Characters** - GIF-based walking animations with citizen AI (needs, moods, housing)
+- **Vehicles** - Cars that drive along roads with pathfinding
+- **Main Menu** - Title screen with New Game (city naming), Load Game, Achievements, Credits
+- **Save/Load** - Auto-save every in-game week + manual save, city-name-based saves
+- **Economy** - Building income/rent, operating costs, citizen spending, bank loans
+- **Day/Night Cycle** - Dynamic lighting with sky color and glow effects
+- **Achievements** - 16 trackable achievements across 5 categories with toast notifications
+- **Music Player** - In-game music with ambient, chill, and jazz genres
+- **Statistics** - Population, happiness, and building statistics dashboard
 - **Multiple Tile Types** - Grass, asphalt, snow, and more
 - **Building Categories** - Residential, commercial, civic, landmarks, props, and seasonal (Christmas!)
 
@@ -42,25 +48,60 @@ Open [http://localhost:3000](http://localhost:3000) to start building.
 
 ```
 app/
+├── page.tsx                    # Client component: menu/game state machine
+├── layout.tsx                  # Root layout with fonts
+├── globals.css                 # Tailwind CSS 4 + RCT1-themed styles
 ├── components/
 │   ├── game/
-│   │   ├── phaser/           # Phaser game engine
-│   │   │   ├── MainScene.ts  # Core rendering & game logic
-│   │   │   └── PhaserGame.tsx# React wrapper
-│   │   ├── GameBoard.tsx     # Main React component
-│   │   ├── types.ts          # TypeScript types & enums
-│   │   └── roadUtils.ts      # Road connection logic
-│   └── ui/                   # React UI components
+│   │   ├── phaser/             # Phaser game engine
+│   │   │   ├── MainScene.ts    # Core rendering & game logic
+│   │   │   ├── PhaserGame.tsx  # React wrapper with imperative handle
+│   │   │   ├── GifLoader.ts    # Character GIF animation loading
+│   │   │   ├── gameConfig.ts   # Phaser game configuration
+│   │   │   ├── systems/        # Modular subsystems
+│   │   │   │   ├── BuildingRenderSystem.ts
+│   │   │   │   ├── CarAISystem.ts
+│   │   │   │   ├── CitizenAISystem.ts
+│   │   │   │   ├── PathfindingSystem.ts
+│   │   │   │   └── PreviewSystem.ts
+│   │   │   └── utils/          # Phaser helpers
+│   │   │       ├── constants.ts
+│   │   │       └── directions.ts
+│   │   ├── GameBoard.tsx       # Main React component (grid, economy, time)
+│   │   ├── types.ts            # Types & enums (TileType, GameSaveData, etc.)
+│   │   ├── roadUtils.ts        # Road connection logic
+│   │   └── dayNightCycle.ts    # Day/night visual computations
+│   └── ui/                     # React UI components
+│       ├── MainMenu.tsx        # Title screen (New Game, Load, Achievements, Credits)
+│       ├── ToolWindow.tsx      # Building/tool selection toolbar
+│       ├── LoadWindow.tsx      # Save file browser
+│       ├── Modal.tsx           # Base modal component
+│       ├── PromptModal.tsx     # Text input modal
+│       ├── MusicPlayer.tsx     # In-game music player
+│       ├── MoneyDisplay.tsx    # Currency display
+│       ├── BankWindow.tsx      # Bank loans & budget
+│       ├── TimeTracker.tsx     # Game time & speed controls
+│       ├── StatisticsWindow.tsx
+│       ├── BuildingInfoWindow.tsx
+│       ├── CitizenInfoWindow.tsx
+│       ├── CitizenListWindow.tsx
+│       ├── AchievementsWindow.tsx
+│       └── AchievementToast.tsx
 ├── data/
-│   └── buildings.ts          # Building registry
+│   ├── buildings.ts            # Building registry
+│   └── achievements.ts         # Achievement definitions
 └── utils/
-    └── sounds.ts             # Audio effects
+    ├── sounds.ts               # Audio effects
+    └── achievementStore.ts     # Achievement persistence
 
 public/
-├── Building/                 # Building sprites by category
-├── Tiles/                    # Ground tiles
-├── Characters/               # Walking animations (GIFs)
-└── cars/                     # Vehicle sprites
+├── Building/                   # Building sprites (residential, commercial, civic, landmark, christmas)
+├── Props/                      # Decorative objects (trees, benches, etc.)
+├── Tiles/                      # Ground tiles (grass, road, asphalt, snow)
+├── Characters/                 # Walking GIF animations (4 directions)
+├── cars/                       # Vehicle sprites (4 directions)
+├── UI/                         # Toolbar icons
+└── audio/music/                # Music tracks (ambient, chill, jazz)
 ```
 
 ---
@@ -121,13 +162,14 @@ Large buildings occupy multiple grid cells but are rendered as a single sprite a
 
 ```typescript
 interface BuildingDefinition {
-  footprint: { width: number; height: number };
+  footprint: { south: [number, number]; east?: [number, number]; ... };
   sprites: {
     south: string;  // Default facing
     north?: string;
     east?: string;
     west?: string;
   };
+  canRotate: boolean;
 }
 ```
 
@@ -155,37 +197,31 @@ for (let slice = 0; slice < numSlices; slice++) {
 
 ## Build Your Own Game
 
-This engine is designed as a starting point. Here are some directions you could take it:
+This engine already includes a city builder foundation with economy, citizen AI, and progression. Here are directions you could expand it:
 
-### City Builder (SimCity-style)
+### Expand the City Builder
 - Add zoning (residential/commercial/industrial)
-- Implement population and demand simulation
-- Create budget and tax systems
+- Implement demand simulation and population growth curves
 - Add city services (police, fire, hospitals)
+- Create natural disasters and events
 
 ### Tycoon Game
-- Add economy and resource management
-- Create customer/visitor AI
-- Implement business progression
-- Add scenarios and challenges
+- Add deeper business progression and upgrades
+- Create customer satisfaction systems
+- Add scenarios and challenges with win conditions
+- Implement competing AI cities
 
 ### RTS (Real-Time Strategy)
 - Add unit selection and control
-- Implement pathfinding for units
 - Create combat systems
 - Add fog of war
-
-### 4X Strategy
-- Add turn-based mechanics
-- Implement tech trees
-- Create diplomacy systems
-- Add procedural map generation
+- Implement resource gathering
 
 ### Colony Sim
-- Add needs-based AI for citizens
-- Implement job and task systems
-- Create survival mechanics
-- Add seasons and weather
+- Expand citizen needs (food, entertainment already exist)
+- Add job specialization and task systems
+- Create survival mechanics and seasons
+- Add weather effects
 
 ---
 
@@ -205,15 +241,15 @@ Buildings are defined in `app/data/buildings.ts`:
   id: "my-building",
   name: "My Building",
   category: "commercial",
-  footprint: { width: 2, height: 2 },
+  footprint: { south: [2, 2], east: [2, 2], north: [2, 2], west: [2, 2] },
   sprites: {
     south: "/Building/commercial/2x2my_building_south.png",
     north: "/Building/commercial/2x2my_building_north.png",
     east: "/Building/commercial/2x2my_building_east.png",
     west: "/Building/commercial/2x2my_building_west.png",
   },
-  icon: "🏢",
-  supportsRotation: true,
+  icon: "/Building/commercial/2x2my_building_south.png",
+  canRotate: true,
 }
 ```
 
