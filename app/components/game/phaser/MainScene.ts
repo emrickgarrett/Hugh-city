@@ -587,6 +587,9 @@ export class MainScene extends Phaser.Scene {
   // ============================================
 
   private updateCars(): void {
+    // Clean up phasing pairs where cars have separated
+    this.carAI.cleanupPhasingPairs(this.cars, this.playerCar);
+
     for (let i = 0; i < this.cars.length; i++) {
       this.cars[i] = this.carAI.updateSingleCar(
         this.cars[i], this.cars, this.playerCar, this.grid, this.gameSpeed, this.characters

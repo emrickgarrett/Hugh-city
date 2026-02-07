@@ -23,6 +23,7 @@ import {
   getCornerTurnDirection,
   canTurnAtTile,
   getUTurnDirection,
+  ROAD_SEGMENT_SIZE,
 } from "../../roadUtils";
 import { PathfindingSystem } from "./PathfindingSystem";
 import { generateId } from "../utils/constants";
@@ -34,8 +35,56 @@ import { generateId } from "../utils/constants";
 export class CarAISystem {
   private pathfinding: PathfindingSystem;
 
+  // Pairs of car IDs that are currently phasing through each other.
+  // Key format: "idA:idB" where idA < idB (sorted for consistency).
+  // Phasing is enabled when two cars are stuck facing each other for 30+ frames,
+  // and disabled once they are no longer overlapping.
+  private phasingPairs = new Set<string>();
+
   constructor(pathfinding: PathfindingSystem) {
     this.pathfinding = pathfinding;
+  }
+
+  /** Get the canonical key for a pair of car IDs */
+  private phasingKey(idA: string, idB: string): string {
+    return idA < idB ? `${idA}:${idB}` : `${idB}:${idA}`;
+  }
+
+  /** Check if two cars are currently phasing through each other */
+  private isPhasing(idA: string, idB: string): boolean {
+    return this.phasingPairs.has(this.phasingKey(idA, idB));
+  }
+
+  /** Start phasing between two cars */
+  private startPhasing(idA: string, idB: string): void {
+    this.phasingPairs.add(this.phasingKey(idA, idB));
+  }
+
+  /**
+   * Clean up phasing pairs — remove pairs where the cars are no longer overlapping.
+   * Called once per frame from the main update loop.
+   */
+  cleanupPhasingPairs(allCars: Car[], playerCar: Car | null): void {
+    const carMap = new Map<string, Car>();
+    for (const car of allCars) carMap.set(car.id, car);
+    if (playerCar) carMap.set(playerCar.id, playerCar);
+
+    const clearDist = CarAISystem.SOFT_COLLISION_RADIUS + 0.1; // slightly beyond soft collision range
+
+    for (const key of this.phasingPairs) {
+      const [idA, idB] = key.split(":");
+      const carA = carMap.get(idA);
+      const carB = carMap.get(idB);
+      if (!carA || !carB) {
+        // One of the cars no longer exists — remove pair
+        this.phasingPairs.delete(key);
+        continue;
+      }
+      const dist = Math.sqrt((carA.x - carB.x) ** 2 + (carA.y - carB.y) ** 2);
+      if (dist > clearDist) {
+        this.phasingPairs.delete(key);
+      }
+    }
   }
 
   // Consistent square collision half-size for all cars (in grid units)
@@ -70,6 +119,7 @@ export class CarAISystem {
     const carsToCheck = playerCar ? [...allCars, playerCar] : allCars;
     for (const other of carsToCheck) {
       if (other.id === car.id) continue;
+      if (this.isPhasing(car.id, other.id)) continue; // Skip phasing pairs
       // Square hitbox check at the look-ahead point
       if (this.carsOverlap(aheadX, aheadY, other.x, other.y)) {
         return false;
@@ -184,6 +234,7 @@ export class CarAISystem {
     const carsToCheck = playerCar ? [...allCars, playerCar] : allCars;
     for (const other of carsToCheck) {
       if (other.id === car.id) continue;
+      if (this.isPhasing(car.id, other.id)) continue; // Skip phasing pairs
 
       // Use square hitbox check at the forward look-ahead point
       if (this.carsOverlap(aheadX, aheadY, other.x, other.y)) {
@@ -217,6 +268,7 @@ export class CarAISystem {
     const carsToCheck = playerCar ? [...allCars, playerCar] : allCars;
     for (const other of carsToCheck) {
       if (other.id === car.id) continue;
+      if (this.isPhasing(car.id, other.id)) continue; // Skip phasing pairs
 
       const dx = other.x - car.x;
       const dy = other.y - car.y;
@@ -882,11 +934,11 @@ export class CarAISystem {
    *
    * 1. Get current direction from path (or recompute if needed)
    * 2. Check for car ahead — if blocked, wait (with recompute timeout)
-   * 3. Move forward by effectiveSpeed
+   * 3. Move forward by effectiveSpeed, then apply gentle lane correction
    * 4. When crossing into a new tile, the path index auto-advances via getPathDirection
    *
-   * No corner logic. No intersection logic. No lane correction.
-   * The A* path already accounts for all of that.
+   * No corner logic. No intersection logic.
+   * The A* path handles routing; lane correction keeps taxis on the right side of the road.
    */
   private moveTaxiAlongPath(
     car: Car,
@@ -938,32 +990,28 @@ export class CarAISystem {
     }
 
     // Step 2: Check if blocked by another car ahead
-    if (!this.isDirectionClear(workingCar, moveDir, allCars, playerCar)) {
-      const waitCount = (workingCar.waiting || 0) + 1;
+    const blocked = !this.isDirectionClear(workingCar, moveDir, allCars, playerCar);
+    const waitCount = blocked ? (workingCar.waiting || 0) + 1 : 0;
 
-      // After 45 frames blocked, recompute path (might find alternate route)
-      if (waitCount > 45) {
-        const newPath = this.pathfinding.computeCarPath(tileX, tileY, target.x, target.y, 500);
-        if (newPath && newPath.length > 0) {
-          return {
-            ...workingCar,
-            cachedCarPath: newPath,
-            carPathIndex: 0,
-            lastCarPathTile: { x: tileX, y: tileY },
-            direction: newPath[0],
-            waiting: 0,
-          };
-        }
-        // Still no path — for Transporting, just reset wait. For PickingUp, abandon.
-        if (car.taxiState === TaxiState.Transporting) {
-          return { ...workingCar, direction: moveDir, waiting: 0 };
-        }
-        return this.taxiToCruising(car);
-      }
-
-      // Wait in place, face the intended direction
+    if (blocked && waitCount < 30) {
+      // Blocked but under threshold — wait in place
       const softPos = this.applySoftCollision({ ...workingCar, direction: moveDir }, allCars, playerCar);
       return { ...workingCar, x: softPos.x, y: softPos.y, direction: moveDir, waiting: waitCount };
+    }
+
+    if (blocked && waitCount >= 30) {
+      // Stuck for 30+ frames — find the blocking car and start phasing through it
+      const vec = directionVectors[moveDir];
+      const aheadX = workingCar.x + vec.dx * CarAISystem.FORWARD_CHECK_DIST;
+      const aheadY = workingCar.y + vec.dy * CarAISystem.FORWARD_CHECK_DIST;
+      const carsToCheck = playerCar ? [...allCars, playerCar] : allCars;
+      for (const other of carsToCheck) {
+        if (other.id === workingCar.id) continue;
+        if (this.carsOverlap(aheadX, aheadY, other.x, other.y)) {
+          this.startPhasing(workingCar.id, other.id);
+        }
+      }
+      // Now fall through to step 3 — isDirectionClear will skip phasing cars
     }
 
     // Step 3: Move forward
@@ -975,6 +1023,11 @@ export class CarAISystem {
     const ps = Math.max(0.001, effectiveSpeed);
     nextX = Math.round(nextX / ps) * ps;
     nextY = Math.round(nextY / ps) * ps;
+
+    // Step 3b: Apply lane correction — gently nudge toward correct side of road
+    const laneCorrected = this.applyLaneCorrection(nextX, nextY, moveDir, effectiveSpeed, grid);
+    nextX = laneCorrected.x;
+    nextY = laneCorrected.y;
 
     // Safety: don't drive off asphalt
     const nextTileX = Math.floor(nextX);
@@ -1001,6 +1054,81 @@ export class CarAISystem {
     const movedCar = { ...workingCar, x: nextX, y: nextY, direction: moveDir, waiting: 0 };
     const softPos = this.applySoftCollision(movedCar, allCars, playerCar);
     return { ...movedCar, x: softPos.x, y: softPos.y };
+  }
+
+  /**
+   * Gently nudge a taxi's position toward the correct lane for its travel direction.
+   *
+   * Lane layout within each 4x4 road segment:
+   *   - Col 1 (localX=1) = southbound (Down)
+   *   - Col 2 (localX=2) = northbound (Up)
+   *   - Row 1 (localY=1) = westbound (Left)
+   *   - Row 2 (localY=2) = eastbound (Right)
+   *
+   * For horizontal travel (Left/Right), we nudge Y toward the correct row center.
+   * For vertical travel (Up/Down), we nudge X toward the correct column center.
+   * The correction is proportional to effectiveSpeed so it feels smooth.
+   *
+   * Returns the corrected {x, y} or the original if no correction needed.
+   */
+  private applyLaneCorrection(
+    x: number,
+    y: number,
+    direction: Direction,
+    effectiveSpeed: number,
+    grid: import("../../types").GridCell[][]
+  ): { x: number; y: number } {
+    const tileX = Math.floor(x);
+    const tileY = Math.floor(y);
+
+    // Only correct on tiles where a lane direction is defined (straights, not corners/intersections)
+    const laneDir = getLaneDirection(tileX, tileY, grid);
+    if (laneDir === null) return { x, y };
+
+    // Determine the segment origin for this tile
+    const segLocalX = tileX % ROAD_SEGMENT_SIZE;
+    const segLocalY = tileY % ROAD_SEGMENT_SIZE;
+    const segOriginX = tileX - segLocalX;
+    const segOriginY = tileY - segLocalY;
+
+    // Correction strength: how quickly to drift toward the correct lane
+    // Strong correction (full movement speed) to get into lane quickly
+    const correctionStrength = effectiveSpeed * 1.0;
+
+    let correctedX = x;
+    let correctedY = y;
+
+    if (direction === Direction.Right || direction === Direction.Left) {
+      // Horizontal travel — correct Y position toward the correct row
+      // Right (eastbound) should be on row 2, Left (westbound) on row 1
+      const targetLocalY = direction === Direction.Right ? 2 : 1;
+      const targetY = segOriginY + targetLocalY + 0.5; // center of the target row tile
+      const deltaY = targetY - y;
+
+      if (Math.abs(deltaY) > 0.02) {
+        // Apply correction, capped at correctionStrength
+        correctedY = y + Math.sign(deltaY) * Math.min(Math.abs(deltaY), correctionStrength);
+      }
+    } else {
+      // Vertical travel — correct X position toward the correct column
+      // Down (southbound) should be on col 1, Up (northbound) on col 2
+      const targetLocalX = direction === Direction.Down ? 1 : 2;
+      const targetX = segOriginX + targetLocalX + 0.5; // center of the target column tile
+      const deltaX = targetX - x;
+
+      if (Math.abs(deltaX) > 0.02) {
+        correctedX = x + Math.sign(deltaX) * Math.min(Math.abs(deltaX), correctionStrength);
+      }
+    }
+
+    // Safety: make sure correction doesn't push us off drivable tiles
+    const correctedTileX = Math.floor(correctedX);
+    const correctedTileY = Math.floor(correctedY);
+    if (!this.pathfinding.isDrivable(correctedTileX, correctedTileY)) {
+      return { x, y }; // Don't correct if it would push off-road
+    }
+
+    return { x: correctedX, y: correctedY };
   }
 
   /** Helper: reset taxi to cruising state */
