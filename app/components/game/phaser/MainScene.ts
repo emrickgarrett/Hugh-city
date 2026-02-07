@@ -40,7 +40,6 @@ import {
   DEPTH_Y_MULT,
   CAMERA_SPEED,
   ZOOM_LEVELS,
-  ZOOM_ANCHOR_TIMEOUT,
 } from "./utils/constants";
 import { PathfindingSystem } from "./systems/PathfindingSystem";
 import { CarAISystem } from "./systems/CarAISystem";
@@ -884,14 +883,12 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  private wheelAccumulator = 0;
-  private lastWheelDirection = 0;
-  // Anchor point for consistent zoom-at-cursor during rapid scrolling
-  private zoomAnchorWorld: { x: number; y: number } | null = null;
-  private zoomAnchorScreen: { x: number; y: number } | null = null;
-  private lastZoomTime = 0;
+  // Smooth scroll wheel zoom constants
+  private static readonly MIN_ZOOM = ZOOM_LEVELS[0]; // 0.25
+  private static readonly MAX_ZOOM = ZOOM_LEVELS[ZOOM_LEVELS.length - 1]; // 4
+  private static readonly ZOOM_SENSITIVITY = 0.001; // Multiplier for smooth zoom per wheel delta pixel
 
-  // Handle mouse wheel zoom - anchor-based to prevent drift
+  // Handle mouse wheel zoom - smooth continuous zoom with anchor-based positioning
   // Official Phaser approach: https://phaser.io/examples/v3.85.0/tilemap/view/mouse-wheel-zoom
   handleWheel(
     pointer: Phaser.Input.Pointer,
@@ -903,33 +900,18 @@ export class MainScene extends Phaser.Scene {
     if (!this.isReady) return;
 
     const camera = this.cameras.main;
-    const WHEEL_THRESHOLD = 100;
-
-    // Accumulate wheel delta for discrete zoom levels
-    const direction = deltaY > 0 ? 1 : -1;
-    if (this.lastWheelDirection !== 0 && this.lastWheelDirection !== direction) {
-      this.wheelAccumulator = 0;
-    }
-    this.lastWheelDirection = direction;
-    this.wheelAccumulator += Math.abs(deltaY);
-
-    if (this.wheelAccumulator < WHEEL_THRESHOLD) return;
-    this.wheelAccumulator = 0;
-
-    // Find current zoom index and calculate new zoom
     const currentZoom = camera.zoom;
-    let currentIndex = ZOOM_LEVELS.indexOf(currentZoom);
-    if (currentIndex === -1) {
-      currentIndex = ZOOM_LEVELS.reduce((closest, z, i) =>
-        Math.abs(z - currentZoom) < Math.abs(ZOOM_LEVELS[closest] - currentZoom) ? i : closest, 0);
-    }
 
-    const newIndex = direction > 0
-      ? Math.max(0, currentIndex - 1)
-      : Math.min(ZOOM_LEVELS.length - 1, currentIndex + 1);
+    // Smooth zoom: multiply current zoom by a factor based on scroll delta
+    // deltaY > 0 = scroll down = zoom out, deltaY < 0 = scroll up = zoom in
+    const zoomFactor = 1 - deltaY * MainScene.ZOOM_SENSITIVITY;
+    let newZoom = currentZoom * zoomFactor;
 
-    const newZoom = ZOOM_LEVELS[newIndex];
-    if (newZoom === currentZoom) return;
+    // Clamp to min/max zoom range
+    newZoom = Math.max(MainScene.MIN_ZOOM, Math.min(MainScene.MAX_ZOOM, newZoom));
+
+    // Skip if zoom didn't change meaningfully
+    if (Math.abs(newZoom - currentZoom) < 0.001) return;
 
     // === OFFICIAL PHASER APPROACH ===
     // Step 1: Get world point under cursor BEFORE zoom
