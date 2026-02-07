@@ -381,6 +381,11 @@ export class CitizenAISystem {
       return char;
     }
 
+    // Citizens riding in a taxi don't move on their own (position synced by taxi)
+    if (char.state === "in_taxi") {
+      return char;
+    }
+
     // Citizens leaving the city - check if they've reached the edge
     if (char.state === "leaving_city") {
       if (this.pathfinding.checkCitizenReachedEdge(char)) {

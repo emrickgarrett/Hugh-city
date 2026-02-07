@@ -17,6 +17,9 @@ import {
   GameTime,
   CharacterWithResidence,
   MoodletType,
+  TaxiState,
+  TAXIS_PER_CITIZEN,
+  TAXI_FLEET_CHECK_INTERVAL,
 } from "../types";
 import { GRID_OFFSET_X, GRID_OFFSET_Y } from "./gameConfig";
 import {
@@ -58,6 +61,7 @@ export interface SceneEvents {
   onBuildingClick?: (buildingId: string, originX: number, originY: number) => void;
   onCitizenClick?: (citizenId: string) => void;
   onCitizenSpend?: (citizenId: string, amount: number) => void;
+  onTaxiFare?: (citizenId: string, fare: number) => void;
 }
 
 export class MainScene extends Phaser.Scene {
@@ -119,6 +123,10 @@ export class MainScene extends Phaser.Scene {
   private isPlayerDriving: boolean = false;
   private playerCar: Car | null = null;
   private pressedKeys: Set<string> = new Set();
+
+  // Taxi fleet management
+  private taxiFleetCheckCounter: number = 0;
+  private taxiIndicators: Map<string, Phaser.GameObjects.Text> = new Map();
 
   // Keyboard controls
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -323,6 +331,13 @@ export class MainScene extends Phaser.Scene {
     this.updateCharacters();
     this.updateCars();
     this.updatePlayerCar();
+
+    // Manage taxi fleet size
+    this.taxiFleetCheckCounter++;
+    if (this.taxiFleetCheckCounter >= TAXI_FLEET_CHECK_INTERVAL) {
+      this.taxiFleetCheckCounter = 0;
+      this.manageTaxiFleet();
+    }
 
     // Handle camera movement (when not driving)
     this.updateCamera(delta);
@@ -574,9 +589,85 @@ export class MainScene extends Phaser.Scene {
   private updateCars(): void {
     for (let i = 0; i < this.cars.length; i++) {
       this.cars[i] = this.carAI.updateSingleCar(
-        this.cars[i], this.cars, this.playerCar, this.grid, this.gameSpeed
+        this.cars[i], this.cars, this.playerCar, this.grid, this.gameSpeed, this.characters
       );
     }
+    // Sync taxi passenger positions
+    this.syncTaxiPassengers();
+  }
+
+  private syncTaxiPassengers(): void {
+    for (const car of this.cars) {
+      if (car.carType === CarType.Taxi && car.taxiState === TaxiState.Transporting && car.passengerId) {
+        const passenger = this.characters.find(c => c.id === car.passengerId);
+        if (passenger) {
+          passenger.x = car.x;
+          passenger.y = car.y;
+          passenger.direction = car.direction;
+        }
+      }
+    }
+  }
+
+  private manageTaxiFleet(): void {
+    // TODO: Re-enable Jeeps once they have a gameplay purpose (e.g., player-spawned cars, delivery trucks)
+    // For now, auto-despawn any Jeeps to reduce road congestion — only taxis should be on the road
+    for (let i = this.cars.length - 1; i >= 0; i--) {
+      const car = this.cars[i];
+      if (car.carType === CarType.Jeep) {
+        const sprite = this.carSprites.get(car.id);
+        if (sprite) {
+          sprite.destroy();
+          this.carSprites.delete(car.id);
+        }
+        this.cars.splice(i, 1);
+      }
+    }
+
+    const citizenCount = this.characters.length;
+    const desiredTaxiCount = Math.floor(citizenCount / TAXIS_PER_CITIZEN);
+
+    const currentTaxis = this.cars.filter(c => c.carType === CarType.Taxi);
+    const currentTaxiCount = currentTaxis.length;
+
+    if (currentTaxiCount < desiredTaxiCount) {
+      // Spawn more taxis
+      const toSpawn = desiredTaxiCount - currentTaxiCount;
+      for (let i = 0; i < toSpawn; i++) {
+        this.spawnTaxi();
+      }
+    } else if (currentTaxiCount > desiredTaxiCount) {
+      // Remove excess taxis (only cruising ones, never ones with passengers)
+      const toRemove = currentTaxiCount - desiredTaxiCount;
+      let removed = 0;
+      for (let i = this.cars.length - 1; i >= 0 && removed < toRemove; i--) {
+        const car = this.cars[i];
+        if (car.carType === CarType.Taxi && car.taxiState === TaxiState.Cruising) {
+          const sprite = this.carSprites.get(car.id);
+          if (sprite) {
+            sprite.destroy();
+            this.carSprites.delete(car.id);
+          }
+          // Clean up indicator
+          const indicator = this.taxiIndicators.get(car.id);
+          if (indicator) {
+            indicator.destroy();
+            this.taxiIndicators.delete(car.id);
+          }
+          this.cars.splice(i, 1);
+          removed++;
+        }
+      }
+    }
+  }
+
+  private spawnTaxi(): boolean {
+    const newCar = this.carAI.spawnCar(this.grid);
+    if (!newCar) return false;
+    newCar.carType = CarType.Taxi;
+    newCar.taxiState = TaxiState.Cruising;
+    this.cars.push(newCar);
+    return true;
   }
 
   private isDrivable(x: number, y: number): boolean {
@@ -941,6 +1032,10 @@ export class MainScene extends Phaser.Scene {
 
   setEventCallbacks(events: SceneEvents): void {
     this.events_ = events;
+    // Wire taxi fare callback from CarAISystem to React
+    this.carAI.onTaxiFare = (citizenId: string, fare: number) => {
+      this.events_.onTaxiFare?.(citizenId, fare);
+    };
   }
 
   // Receive grid updates from React (differential update)
@@ -1223,7 +1318,8 @@ export class MainScene extends Phaser.Scene {
   }
 
   getCarCount(): number {
-    return this.cars.length;
+    // Only count non-taxi cars for save/load — taxis are auto-managed by fleet system
+    return this.cars.filter(c => c.carType !== CarType.Taxi).length;
   }
 
   clearCharacters(): void {
@@ -1238,10 +1334,51 @@ export class MainScene extends Phaser.Scene {
     this.cars = [];
     this.carSprites.forEach((sprite) => sprite.destroy());
     this.carSprites.clear();
+    this.taxiIndicators.forEach((indicator) => indicator.destroy());
+    this.taxiIndicators.clear();
     // Also clear player car if exists
     if (this.playerCar) {
       this.playerCar = null;
       this.isPlayerDriving = false;
+    }
+  }
+
+  /**
+   * Eject all taxi passengers before saving, so save data is clean.
+   * Citizens are placed on nearest sidewalk and restored to their pre-taxi state.
+   */
+  prepareForSave(): void {
+    for (const car of this.cars) {
+      if (car.carType === CarType.Taxi && car.passengerId) {
+        const passenger = this.characters.find(c => c.id === car.passengerId);
+        if (passenger && passenger.state === "in_taxi") {
+          // Restore citizen state
+          passenger.state = passenger.preTaxiState || "wandering";
+          passenger.currentDestination = passenger.preTaxiDestination;
+          passenger.preTaxiState = undefined;
+          passenger.preTaxiDestination = undefined;
+          passenger.taxiId = undefined;
+          passenger.cachedPath = undefined;
+          passenger.pathIndex = undefined;
+          passenger.lastPathTile = undefined;
+          // Place on nearest sidewalk
+          const sidewalk = this.pathfinding.findNearestSidewalkTile(
+            Math.floor(car.x), Math.floor(car.y)
+          );
+          if (sidewalk) {
+            passenger.x = sidewalk.x + 0.5;
+            passenger.y = sidewalk.y + 0.5;
+          }
+        }
+        // Reset taxi state
+        car.passengerId = undefined;
+        car.taxiState = TaxiState.Cruising;
+        car.pickupTarget = undefined;
+        car.dropoffTarget = undefined;
+        car.cachedCarPath = undefined;
+        car.carPathIndex = undefined;
+        car.lastCarPathTile = undefined;
+      }
     }
   }
 
@@ -1756,6 +1893,14 @@ export class MainScene extends Phaser.Scene {
       }
     });
 
+    // Remove indicators for cars that no longer exist
+    this.taxiIndicators.forEach((indicator, id) => {
+      if (!currentCarIds.has(id)) {
+        indicator.destroy();
+        this.taxiIndicators.delete(id);
+      }
+    });
+
     // Update or create car sprites
     for (const car of allCars) {
       const screenPos = this.gridToScreen(car.x, car.y);
@@ -1772,6 +1917,24 @@ export class MainScene extends Phaser.Scene {
         sprite.setTexture(textureKey);
       }
       sprite.setDepth(this.depthFromSortPoint(screenPos.x, groundY, 0.1));
+
+      // Taxi passenger indicator
+      if (car.carType === CarType.Taxi && car.passengerId) {
+        let indicator = this.taxiIndicators.get(car.id);
+        if (!indicator) {
+          indicator = this.add.text(screenPos.x, groundY - 28, "\u{1F695}", { fontSize: "12px" });
+          indicator.setOrigin(0.5, 1);
+          this.taxiIndicators.set(car.id, indicator);
+        }
+        indicator.setPosition(screenPos.x, groundY - 28);
+        indicator.setDepth(this.depthFromSortPoint(screenPos.x, groundY, 0.1) + 1);
+        indicator.setVisible(true);
+      } else {
+        const indicator = this.taxiIndicators.get(car.id);
+        if (indicator) {
+          indicator.setVisible(false);
+        }
+      }
     }
   }
 
@@ -1870,8 +2033,8 @@ export class MainScene extends Phaser.Scene {
         sprite.setPosition(screenPos.x, centerY);
       }
 
-      // Hide citizens who are resting at home
-      if (char.state === "resting_at_home") {
+      // Hide citizens who are resting at home or riding in a taxi
+      if (char.state === "resting_at_home" || char.state === "in_taxi") {
         sprite.setVisible(false);
         continue;
       }

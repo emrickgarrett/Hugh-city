@@ -14,7 +14,7 @@ export interface CitizenData {
   residenceY?: number;
   residenceBuildingId?: string;
   rentPaid: boolean;
-  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home" | "leaving_city";
+  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home" | "leaving_city" | "in_taxi";
   destinationBuildingName?: string;
   moodlet?: MoodletType;
   moodletReason?: string;
@@ -109,6 +109,12 @@ const getActivityDescription = (
         emoji: "😴",
         text: "Resting at home (out of money)",
         color: "#94a3b8",
+      };
+    case "in_taxi":
+      return {
+        emoji: "\u{1F695}",
+        text: "Riding in a taxi",
+        color: "#fbbf24",
       };
     case "leaving_city":
       return {

@@ -11,6 +11,7 @@ import {
   getBuilding,
   getBuildingFootprint,
 } from "@/app/data/buildings";
+import { getLaneDirection } from "../../roadUtils";
 
 /**
  * PathfindingSystem handles all grid-based pathfinding and walkability checks.
@@ -791,5 +792,155 @@ export class PathfindingSystem {
     if (this.debugLogCounter % 60 === 0) {
       console.log(`[Citizen ${charId.slice(0, 4)}]`, ...args);
     }
+  }
+
+  // ============================================
+  // CAR PATHFINDING (asphalt-only A*)
+  // ============================================
+
+  /**
+   * A* pathfinding restricted to drivable (asphalt) tiles only.
+   * Uniform cost since all asphalt tiles have equal weight.
+   */
+  computeCarPath(
+    startX: number,
+    startY: number,
+    targetX: number,
+    targetY: number,
+    maxSteps: number = 300
+  ): Direction[] | null {
+    if (startX === targetX && startY === targetY) return [];
+
+    const openSet: Array<[number, number, number, number]> = [];
+    const closedSet = new Set<string>();
+    const gCosts = new Map<string, number>();
+    const cameFrom = new Map<string, { x: number; y: number; dir: Direction }>();
+
+    const heuristic = (x: number, y: number) => Math.abs(x - targetX) + Math.abs(y - targetY);
+
+    const startKey = `${startX},${startY}`;
+    gCosts.set(startKey, 0);
+    openSet.push([heuristic(startX, startY), startX, startY, 0]);
+
+    let expansions = 0;
+
+    while (openSet.length > 0 && expansions < maxSteps) {
+      openSet.sort((a, b) => a[0] - b[0]);
+      const [, currentX, currentY, currentCost] = openSet.shift()!;
+      const currentKey = `${currentX},${currentY}`;
+
+      if (closedSet.has(currentKey)) continue;
+      closedSet.add(currentKey);
+      expansions++;
+
+      if (currentX === targetX && currentY === targetY) {
+        // Reconstruct path
+        const path: Direction[] = [];
+        let cx = currentX, cy = currentY;
+        while (cx !== startX || cy !== startY) {
+          const from = cameFrom.get(`${cx},${cy}`);
+          if (!from) break;
+          path.unshift(from.dir);
+          cx = from.x;
+          cy = from.y;
+        }
+        return path;
+      }
+
+      for (const dir of allDirections) {
+        const vec = directionVectors[dir];
+        const nextX = currentX + vec.dx;
+        const nextY = currentY + vec.dy;
+        const nextKey = `${nextX},${nextY}`;
+
+        if (closedSet.has(nextKey)) continue;
+        if (!this.isDrivable(nextX, nextY)) continue;
+
+        // Lane-aware cost: penalize driving against the lane direction (wrong side of road)
+        let moveCost = 1;
+        const laneDir = getLaneDirection(nextX, nextY, this.grid);
+        if (laneDir !== null) {
+          if (dir === laneDir) {
+            // Driving with lane — slight bonus
+            moveCost = 0.8;
+          } else if (dir === oppositeDirection[laneDir]) {
+            // Driving against lane (wrong way) — heavy penalty
+            moveCost = 5;
+          } else {
+            // Perpendicular (crossing through) — moderate cost
+            moveCost = 2;
+          }
+        }
+        // laneDir === null means intersection center or no lane — normal cost
+
+        const newCost = currentCost + moveCost;
+        const existingCost = gCosts.get(nextKey);
+        if (existingCost !== undefined && newCost >= existingCost) continue;
+
+        gCosts.set(nextKey, newCost);
+        cameFrom.set(nextKey, { x: currentX, y: currentY, dir });
+        openSet.push([newCost + heuristic(nextX, nextY), nextX, nextY, newCost]);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Find nearest drivable (asphalt) tile to a given position via BFS.
+   * Used to find pickup/dropoff points for taxis near citizens/buildings.
+   */
+  findNearestDrivableTile(x: number, y: number, maxRadius: number = 5): { x: number; y: number } | null {
+    for (let r = 0; r <= maxRadius; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) + Math.abs(dy) !== r) continue; // Only check the ring at distance r
+          const checkX = x + dx;
+          const checkY = y + dy;
+          if (this.isDrivable(checkX, checkY)) {
+            // Ensure the tile has at least 2 drivable neighbors so cars can pass through
+            // (avoids dead-end edge tiles where taxis get stuck)
+            const neighborCount = this.getValidCarDirections(checkX, checkY).length;
+            if (neighborCount >= 2) {
+              return { x: checkX, y: checkY };
+            }
+          }
+        }
+      }
+    }
+    // Fallback: accept any drivable tile even with fewer neighbors
+    for (let r = 0; r <= maxRadius; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) + Math.abs(dy) !== r) continue;
+          const checkX = x + dx;
+          const checkY = y + dy;
+          if (this.isDrivable(checkX, checkY)) {
+            return { x: checkX, y: checkY };
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Find nearest sidewalk tile to a given position via BFS.
+   * Used to place citizens when dropped off by taxis.
+   */
+  findNearestSidewalkTile(x: number, y: number, maxRadius: number = 5): { x: number; y: number } | null {
+    for (let r = 0; r <= maxRadius; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.abs(dx) + Math.abs(dy) !== r) continue;
+          const checkX = x + dx;
+          const checkY = y + dy;
+          if (this.isSidewalk(checkX, checkY)) {
+            return { x: checkX, y: checkY };
+          }
+        }
+      }
+    }
+    return null;
   }
 }
