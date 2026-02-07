@@ -35,6 +35,7 @@ import {
   playBuildSound,
   playBuildRoadSound,
   playOpenSound,
+  playClickSound,
   playDoubleClickSound,
 } from "@/app/utils/sounds";
 
@@ -94,9 +95,8 @@ const createEmptyGrid = (): GridCell[][] => {
   );
 };
 
-// Discrete zoom levels matching the button zoom levels
+// Discrete zoom levels for button zoom presets
 const ZOOM_LEVELS = [0.25, 0.5, 1, 2, 4];
-const SCROLL_THRESHOLD = 100; // Amount of scroll needed to change zoom level
 
 // Helper function to find closest zoom level index
 const findClosestZoomIndex = (zoomValue: number): number => {
@@ -203,6 +203,10 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
   const [achievementToast, setAchievementToast] = useState<AchievementDefinition | null>(null);
   const cityNameRef = useRef(cityName);
   useEffect(() => { cityNameRef.current = cityName; }, [cityName]);
+
+  // Auto-save indicator
+  const [showAutoSaveToast, setShowAutoSaveToast] = useState(false);
+  const autoSaveToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Achievement progress tracking refs (cumulative, survive across renders)
   const totalBuildingsPlacedRef = useRef(0);
@@ -317,9 +321,6 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
   // Ref to Phaser game for spawning entities
   const phaserGameRef = useRef<PhaserGameHandle>(null);
 
-  // Ref to track accumulated scroll delta for zoom
-  const scrollAccumulatorRef = useRef(0);
-  const scrollDirectionRef = useRef<number | null>(null); // Track scroll direction: positive = down, negative = up
 
   // Reset building orientation to south when switching buildings
   useEffect(() => {
@@ -331,10 +332,10 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
     }
   }, [selectedBuildingId]);
 
-  // Handle keyboard rotation for buildings
+  // Consolidated keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't handle rotation if user is typing in an input field
+      // Don't handle shortcuts if user is typing in an input field
       const activeElement = document.activeElement;
       const isTyping =
         activeElement &&
@@ -342,65 +343,128 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
           activeElement.tagName === "TEXTAREA" ||
           (activeElement as HTMLElement)?.isContentEditable);
 
-      if (isTyping) {
+      if (isTyping) return;
+
+      const key = e.key;
+
+      // Escape — close windows (priority order) or deselect tool
+      if (key === "Escape") {
+        e.preventDefault();
+        if (isCitizenInfoVisible) { setIsCitizenInfoVisible(false); return; }
+        if (isBuildingInfoVisible) { setIsBuildingInfoVisible(false); return; }
+        if (isStatisticsVisible) { setIsStatisticsVisible(false); return; }
+        if (isBankWindowVisible) { setIsBankWindowVisible(false); return; }
+        if (isAchievementsVisible) { setIsAchievementsVisible(false); return; }
+        if (isCitizenListVisible) { setIsCitizenListVisible(false); return; }
+        if (isToolWindowVisible) { setIsToolWindowVisible(false); return; }
+        if (selectedTool !== ToolType.None) { setSelectedTool(ToolType.None); return; }
         return;
       }
 
-      if (selectedTool === ToolType.Building && selectedBuildingId) {
-        const building = getBuilding(selectedBuildingId);
-        if (building?.supportsRotation && (e.key === "r" || e.key === "R")) {
-          e.preventDefault();
-          setBuildingOrientation((prev) => {
-            switch (prev) {
-              case Direction.Down:
-                return Direction.Right;
-              case Direction.Right:
-                return Direction.Up;
-              case Direction.Up:
-                return Direction.Left;
-              case Direction.Left:
-                return Direction.Down;
-              default:
-                return Direction.Down;
-            }
-          });
+      // R — Rotate building
+      if (key === "r" || key === "R") {
+        if (selectedTool === ToolType.Building && selectedBuildingId) {
+          const building = getBuilding(selectedBuildingId);
+          if (building?.supportsRotation) {
+            e.preventDefault();
+            setBuildingOrientation((prev) => {
+              switch (prev) {
+                case Direction.Down: return Direction.Right;
+                case Direction.Right: return Direction.Up;
+                case Direction.Up: return Direction.Left;
+                case Direction.Left: return Direction.Down;
+                default: return Direction.Down;
+              }
+            });
+          }
         }
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedTool, selectedBuildingId]);
-
-  // Handle ESC key to deselect tool
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't handle ESC if user is typing in an input field
-      const activeElement = document.activeElement;
-      const isTyping =
-        activeElement &&
-        (activeElement.tagName === "INPUT" ||
-          activeElement.tagName === "TEXTAREA" ||
-          (activeElement as HTMLElement)?.isContentEditable);
-
-      if (isTyping) {
         return;
       }
 
-      if (e.key === "Escape") {
-        if (selectedTool !== ToolType.None) {
+      // 1 — Toggle build tool window
+      if (key === "1") {
+        e.preventDefault();
+        playClickSound();
+        setIsToolWindowVisible((prev) => {
+          if (!prev) return true;
           setSelectedTool(ToolType.None);
-        }
-        // Close tool window if it's open
-        if (isToolWindowVisible) {
-          setIsToolWindowVisible(false);
-        }
+          return false;
+        });
+        return;
+      }
+
+      // 2 — Toggle eraser
+      if (key === "2") {
+        e.preventDefault();
+        playClickSound();
+        setSelectedTool((prev) =>
+          prev === ToolType.Eraser ? ToolType.None : ToolType.Eraser
+        );
+        return;
+      }
+
+      // 3 — Toggle road tool
+      if (key === "3") {
+        e.preventDefault();
+        playClickSound();
+        setSelectedTool((prev) =>
+          prev === ToolType.RoadNetwork ? ToolType.None : ToolType.RoadNetwork
+        );
+        return;
+      }
+
+      // Space or P — Toggle pause
+      if (key === " " || key === "p" || key === "P") {
+        e.preventDefault();
+        setGameSpeed((prev) =>
+          prev === GameSpeed.Paused ? GameSpeed.Normal : GameSpeed.Paused
+        );
+        return;
+      }
+
+      // + or = — Speed up
+      if (key === "+" || key === "=") {
+        e.preventDefault();
+        setGameSpeed((prev) => {
+          if (prev === GameSpeed.Paused) return GameSpeed.Normal;
+          if (prev === GameSpeed.Normal) return GameSpeed.Fast;
+          return prev;
+        });
+        return;
+      }
+
+      // - — Slow down
+      if (key === "-") {
+        e.preventDefault();
+        setGameSpeed((prev) => {
+          if (prev === GameSpeed.Fast) return GameSpeed.Normal;
+          if (prev === GameSpeed.Normal) return GameSpeed.Paused;
+          return prev;
+        });
+        return;
       }
     };
 
+    // Right-click — cancel/back (close topmost window or deselect tool)
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      if (isCitizenInfoVisible) { setIsCitizenInfoVisible(false); return; }
+      if (isBuildingInfoVisible) { setIsBuildingInfoVisible(false); return; }
+      if (isStatisticsVisible) { setIsStatisticsVisible(false); return; }
+      if (isBankWindowVisible) { setIsBankWindowVisible(false); return; }
+      if (isAchievementsVisible) { setIsAchievementsVisible(false); return; }
+      if (isCitizenListVisible) { setIsCitizenListVisible(false); return; }
+      if (isToolWindowVisible) { setIsToolWindowVisible(false); return; }
+      if (selectedTool !== ToolType.None) { setSelectedTool(ToolType.None); return; }
+    };
+
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedTool, isToolWindowVisible]);
+    window.addEventListener("contextmenu", handleContextMenu);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("contextmenu", handleContextMenu);
+    };
+  }, [selectedTool, selectedBuildingId, isToolWindowVisible, isCitizenInfoVisible, isBuildingInfoVisible, isStatisticsVisible, isBankWindowVisible, isAchievementsVisible, isCitizenListVisible]);
 
   // Sync driving state with Phaser
   useEffect(() => {
@@ -618,6 +682,10 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
         JSON.stringify(saveData)
       );
       console.log(`[Auto-Save] City "${cityName}" saved (Day ${gameTime.day}, Month ${gameTime.month})`);
+      // Show auto-save toast
+      if (autoSaveToastTimerRef.current) clearTimeout(autoSaveToastTimerRef.current);
+      setShowAutoSaveToast(true);
+      autoSaveToastTimerRef.current = setTimeout(() => setShowAutoSaveToast(false), 2500);
     } catch (error) {
       console.error("[Auto-Save] Failed:", error);
     }
@@ -2255,26 +2323,28 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
 
   // Zoom controls
   const handleZoomIn = useCallback(() => {
-    scrollAccumulatorRef.current = 0; // Reset accumulator when using buttons
     setZoom((prev) => {
       const currentIndex = ZOOM_LEVELS.indexOf(prev);
       if (currentIndex === -1) {
-        // If current zoom doesn't match exactly, find closest and go up
+        // If current zoom is smooth (from scroll wheel), snap to nearest preset and go up
         const closestIndex = findClosestZoomIndex(prev);
-        return ZOOM_LEVELS[Math.min(closestIndex + 1, ZOOM_LEVELS.length - 1)];
+        // If we're below the closest level, snap to it; otherwise go one above
+        const target = ZOOM_LEVELS[closestIndex] > prev ? closestIndex : closestIndex + 1;
+        return ZOOM_LEVELS[Math.min(target, ZOOM_LEVELS.length - 1)];
       }
       return ZOOM_LEVELS[Math.min(currentIndex + 1, ZOOM_LEVELS.length - 1)];
     });
   }, []);
 
   const handleZoomOut = useCallback(() => {
-    scrollAccumulatorRef.current = 0; // Reset accumulator when using buttons
     setZoom((prev) => {
       const currentIndex = ZOOM_LEVELS.indexOf(prev);
       if (currentIndex === -1) {
-        // If current zoom doesn't match exactly, find closest and go down
+        // If current zoom is smooth (from scroll wheel), snap to nearest preset and go down
         const closestIndex = findClosestZoomIndex(prev);
-        return ZOOM_LEVELS[Math.max(closestIndex - 1, 0)];
+        // If we're above the closest level, snap to it; otherwise go one below
+        const target = ZOOM_LEVELS[closestIndex] < prev ? closestIndex : closestIndex - 1;
+        return ZOOM_LEVELS[Math.max(target, 0)];
       }
       return ZOOM_LEVELS[Math.max(currentIndex - 1, 0)];
     });
@@ -2976,6 +3046,31 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
         achievement={achievementToast}
         onDismiss={() => setAchievementToast(null)}
       />
+
+      {/* Auto-save toast */}
+      {showAutoSaveToast && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 60,
+            left: 12,
+            zIndex: 1500,
+            background: "rgba(0, 0, 0, 0.7)",
+            color: "#aaa",
+            padding: "6px 14px",
+            borderRadius: 4,
+            fontSize: 13,
+            fontFamily: "var(--font-pixelify), monospace",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            animation: "fadeInOut 2.5s ease-in-out",
+            pointerEvents: "none",
+          }}
+        >
+          💾 Auto-saved
+        </div>
+      )}
 
       {/* Main game area */}
       <div
