@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { AchievementDefinition } from "@/app/data/achievements";
-import { playOpenSound } from "@/app/utils/sounds";
+import { playAchievementSound } from "@/app/utils/sounds";
 
 interface AchievementToastProps {
   achievement: AchievementDefinition | null;
@@ -19,7 +19,7 @@ export default function AchievementToast({ achievement, onDismiss }: Achievement
     // Only play sound once per unique achievement
     if (lastPlayedIdRef.current === achievement.id) return;
     lastPlayedIdRef.current = achievement.id;
-    playOpenSound();
+    playAchievementSound();
     const timer = setTimeout(() => onDismissRef.current(), 4000);
     return () => clearTimeout(timer);
   }, [achievement]);
