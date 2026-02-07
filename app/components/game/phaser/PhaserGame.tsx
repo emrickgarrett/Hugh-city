@@ -29,6 +29,7 @@ export interface PhaserGameHandle {
   zoomAtPoint: (zoom: number, screenX: number, screenY: number) => void;
   setGameSpeed: (speed: GameSpeed) => void;
   getBuildingResidentCount: (originX: number, originY: number) => number;
+  getAvailableHousingSlots: () => number;
   // Citizen management
   getCitizenData: (citizenId: string) => CharacterWithResidence | null;
   getAllCitizens: () => CharacterWithResidence[];
@@ -169,6 +170,12 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
         getBuildingResidentCount: (originX: number, originY: number) => {
           if (sceneRef.current) {
             return sceneRef.current.getBuildingResidentCount(originX, originY);
+          }
+          return 0;
+        },
+        getAvailableHousingSlots: () => {
+          if (sceneRef.current) {
+            return sceneRef.current.getAvailableHousingSlots();
           }
           return 0;
         },
