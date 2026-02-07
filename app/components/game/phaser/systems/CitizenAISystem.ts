@@ -496,6 +496,7 @@ export class CitizenAISystem {
               buildingOriginX: target.originX,
               buildingOriginY: target.originY,
             };
+            char = { ...char, cachedPath: undefined, pathIndex: undefined, lastPathTile: undefined };
             break;
           }
         }
@@ -522,6 +523,7 @@ export class CitizenAISystem {
               buildingOriginX: char.residenceX,
               buildingOriginY: char.residenceY,
             };
+            char = { ...char, cachedPath: undefined, pathIndex: undefined, lastPathTile: undefined };
           }
         }
       }
@@ -672,6 +674,7 @@ export class CitizenAISystem {
               buildingOriginX: target.originX,
               buildingOriginY: target.originY,
             };
+            char = { ...char, cachedPath: undefined, pathIndex: undefined, lastPathTile: undefined };
             break;
           }
         }
@@ -937,72 +940,53 @@ export class CitizenAISystem {
         char.pathIndex !== undefined &&
         char.pathIndex < char.cachedPath.length;
 
-      const movedToNewTile = lastPathTile && (lastPathTile.x !== tileX || lastPathTile.y !== tileY);
+      if (hasCachedPath && nearCenter) {
+        // Advance path index if we've moved to a new tile since last path step
+        let pathIdx = char.pathIndex!;
+        if (lastPathTile && (lastPathTile.x !== tileX || lastPathTile.y !== tileY)) {
+          pathIdx = Math.min(pathIdx + 1, char.cachedPath!.length);
+        }
 
-      if (nearCenter && hasCachedPath && movedToNewTile) {
-        const nextPathIndex = char.pathIndex! + 1;
-        const pathLength = char.cachedPath!.length;
-
-        if (nextPathIndex < pathLength) {
-          const nextDir = char.cachedPath![nextPathIndex];
+        if (pathIdx < char.cachedPath!.length) {
+          const nextDir = char.cachedPath![pathIdx];
           const nextVec = directionVectors[nextDir];
           const nextTileX = tileX + nextVec.dx;
           const nextTileY = tileY + nextVec.dy;
 
           if (this.pathfinding.isWalkable(nextTileX, nextTileY)) {
             newDirection = nextDir;
-            char = {
-              ...char,
-              pathIndex: nextPathIndex,
-              lastPathTile: { x: tileX, y: tileY },
-            };
-            this.pathfinding.debugLog(char.id, `Following path step ${nextPathIndex}/${pathLength}, dir: ${nextDir}`);
+            char = { ...char, pathIndex: pathIdx, lastPathTile: { x: tileX, y: tileY } };
+            this.pathfinding.debugLog(char.id, `Following path step ${pathIdx}/${char.cachedPath!.length}, dir: ${nextDir}`);
           } else {
-            char = {
-              ...char,
-              cachedPath: undefined,
-              pathIndex: undefined,
-              lastPathTile: undefined,
-            };
-            this.pathfinding.debugLog(char.id, `Path blocked at step ${nextPathIndex}, will recompute`);
+            // Path blocked — clear and recompute next frame
+            char = { ...char, cachedPath: undefined, pathIndex: undefined, lastPathTile: undefined };
+            this.pathfinding.debugLog(char.id, `Path blocked at step ${pathIdx}, will recompute`);
           }
         } else {
-          char = {
-            ...char,
-            cachedPath: undefined,
-            pathIndex: undefined,
-            lastPathTile: undefined,
-          };
+          // Path exhausted
+          char = { ...char, cachedPath: undefined, pathIndex: undefined, lastPathTile: undefined };
         }
       } else if (nearCenter && !hasCachedPath) {
+        // Compute fresh A* path
         const fullPath = this.pathfinding.computeFullPath(tileX, tileY, currentDestination.x, currentDestination.y, 200, false);
         if (fullPath && fullPath.length > 0) {
-          char = {
-            ...char,
-            cachedPath: fullPath,
-            pathIndex: 0,
-            lastPathTile: { x: tileX, y: tileY },
-          };
+          // Follow first step immediately — don't wait for next frame
           newDirection = fullPath[0];
+          char = { ...char, cachedPath: fullPath, pathIndex: 0, lastPathTile: { x: tileX, y: tileY } };
           this.pathfinding.debugLog(char.id, `Computed new path with ${fullPath.length} steps, first dir: ${fullPath[0]}`);
         } else {
+          // A* failed — fall back to greedy movement
           const greedyDir = this.pathfinding.moveTowardsTargetGreedy(tileX, tileY, currentDestination.x, currentDestination.y);
           if (greedyDir && this.pathfinding.isWalkable(tileX + directionVectors[greedyDir].dx, tileY + directionVectors[greedyDir].dy)) {
             newDirection = greedyDir;
-          } else {
-            const validDirs = this.pathfinding.getValidDirections(tileX, tileY);
-            if (validDirs.length > 0) {
-              newDirection = validDirs[0];
-            }
           }
         }
+      } else if (!nearCenter && hasCachedPath) {
+        // Between tile centers with a cached path — keep moving in current direction
+        // (no direction change needed, citizen continues toward next tile center)
       } else if (isCurrentDirBlocked) {
-        char = {
-          ...char,
-          cachedPath: undefined,
-          pathIndex: undefined,
-          lastPathTile: undefined,
-        };
+        // No cached path, current direction blocked — try greedy or pick new direction
+        char = { ...char, cachedPath: undefined, pathIndex: undefined, lastPathTile: undefined };
         const greedyDir = this.pathfinding.moveTowardsTargetGreedy(tileX, tileY, currentDestination.x, currentDestination.y);
         if (greedyDir && this.pathfinding.isWalkable(tileX + directionVectors[greedyDir].dx, tileY + directionVectors[greedyDir].dy)) {
           newDirection = greedyDir;
