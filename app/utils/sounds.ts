@@ -1,5 +1,10 @@
 // UI Sound utilities
 
+// Global SFX volume multiplier (0–1), set by settings menu
+let _sfxVolume = 1.0;
+export function setSfxVolume(v: number) { _sfxVolume = Math.max(0, Math.min(1, v)); }
+export function getSfxVolume(): number { return _sfxVolume; }
+
 // Create and cache audio elements for better performance
 const audioCache: Record<string, HTMLAudioElement> = {};
 
@@ -14,7 +19,7 @@ function getAudio(path: string): HTMLAudioElement {
 function playSound(path: string, volume: number = 0.5) {
   // Clone the audio to allow overlapping plays
   const audio = getAudio(path).cloneNode() as HTMLAudioElement;
-  audio.volume = volume;
+  audio.volume = volume * _sfxVolume;
   audio.play().catch(() => {
     // Ignore autoplay errors
   });
@@ -60,7 +65,7 @@ export function playErrorSound() {
   osc.type = "square";
   osc.frequency.setValueAtTime(150, t);
   osc.frequency.linearRampToValueAtTime(100, t + 0.15);
-  gain.gain.setValueAtTime(0.12, t);
+  gain.gain.setValueAtTime(0.12 * _sfxVolume, t);
   gain.gain.linearRampToValueAtTime(0, t + 0.2);
   osc.connect(gain).connect(ctx.destination);
   osc.start(t);
@@ -78,7 +83,7 @@ export function playZoomSound() {
   osc.type = "sine";
   osc.frequency.setValueAtTime(1200, t);
   osc.frequency.linearRampToValueAtTime(800, t + 0.06);
-  gain.gain.setValueAtTime(0.08, t);
+  gain.gain.setValueAtTime(0.08 * _sfxVolume, t);
   gain.gain.linearRampToValueAtTime(0, t + 0.08);
   osc.connect(gain).connect(ctx.destination);
   osc.start(t);
@@ -96,7 +101,7 @@ export function playSpeedUpSound() {
   osc.type = "sine";
   osc.frequency.setValueAtTime(400, t);
   osc.frequency.linearRampToValueAtTime(800, t + 0.1);
-  gain.gain.setValueAtTime(0.1, t);
+  gain.gain.setValueAtTime(0.1 * _sfxVolume, t);
   gain.gain.linearRampToValueAtTime(0, t + 0.12);
   osc.connect(gain).connect(ctx.destination);
   osc.start(t);
@@ -113,7 +118,7 @@ export function playSpeedDownSound() {
   osc.type = "sine";
   osc.frequency.setValueAtTime(800, t);
   osc.frequency.linearRampToValueAtTime(400, t + 0.1);
-  gain.gain.setValueAtTime(0.1, t);
+  gain.gain.setValueAtTime(0.1 * _sfxVolume, t);
   gain.gain.linearRampToValueAtTime(0, t + 0.12);
   osc.connect(gain).connect(ctx.destination);
   osc.start(t);
@@ -132,7 +137,7 @@ export function playPauseSound() {
     osc.type = "sine";
     const offset = i * 0.07;
     osc.frequency.setValueAtTime(600 - i * 200, t + offset);
-    gain.gain.setValueAtTime(0.08, t + offset);
+    gain.gain.setValueAtTime(0.08 * _sfxVolume, t + offset);
     gain.gain.linearRampToValueAtTime(0, t + offset + 0.06);
     osc.connect(gain).connect(ctx.destination);
     osc.start(t + offset);
@@ -152,7 +157,7 @@ export function playUnpauseSound() {
     osc.type = "sine";
     const offset = i * 0.07;
     osc.frequency.setValueAtTime(400 + i * 200, t + offset);
-    gain.gain.setValueAtTime(0.08, t + offset);
+    gain.gain.setValueAtTime(0.08 * _sfxVolume, t + offset);
     gain.gain.linearRampToValueAtTime(0, t + offset + 0.06);
     osc.connect(gain).connect(ctx.destination);
     osc.start(t + offset);
@@ -171,7 +176,7 @@ export function playCashSound() {
   const gain1 = ctx.createGain();
   osc1.type = "sine";
   osc1.frequency.setValueAtTime(800, t);
-  gain1.gain.setValueAtTime(0.015, t);
+  gain1.gain.setValueAtTime(0.015 * _sfxVolume, t);
   gain1.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
   osc1.connect(gain1).connect(ctx.destination);
   osc1.start(t);
@@ -182,7 +187,7 @@ export function playCashSound() {
   const gain2 = ctx.createGain();
   osc2.type = "sine";
   osc2.frequency.setValueAtTime(1200, t + 0.05);
-  gain2.gain.setValueAtTime(0.01, t + 0.05);
+  gain2.gain.setValueAtTime(0.01 * _sfxVolume, t + 0.05);
   gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
   osc2.connect(gain2).connect(ctx.destination);
   osc2.start(t + 0.05);
@@ -202,8 +207,8 @@ export function playAchievementSound() {
     osc.type = "sine";
     const offset = i * 0.1;
     osc.frequency.setValueAtTime(freq, t + offset);
-    gain.gain.setValueAtTime(0.1, t + offset);
-    gain.gain.setValueAtTime(0.1, t + offset + 0.15);
+    gain.gain.setValueAtTime(0.1 * _sfxVolume, t + offset);
+    gain.gain.setValueAtTime(0.1 * _sfxVolume, t + offset + 0.15);
     gain.gain.linearRampToValueAtTime(0, t + offset + 0.4);
     osc.connect(gain).connect(ctx.destination);
     osc.start(t + offset);

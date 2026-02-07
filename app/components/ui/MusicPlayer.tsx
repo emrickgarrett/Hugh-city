@@ -111,9 +111,10 @@ function MenuButton({
 // Music player component styled like top menu buttons
 interface MusicPlayerProps {
   onTrackPlay?: (genre: string, trackIndex: number) => void;
+  musicVolume?: number; // 0–1, effective volume (master * music)
 }
 
-export default function MusicPlayer({ onTrackPlay }: MusicPlayerProps) {
+export default function MusicPlayer({ onTrackPlay, musicVolume = 1 }: MusicPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [currentGenre, setCurrentGenre] = useState<MusicGenre>("chill");
@@ -127,6 +128,11 @@ export default function MusicPlayer({ onTrackPlay }: MusicPlayerProps) {
   onTrackPlayRef.current = onTrackPlay;
 
   const currentPlaylist = MUSIC_PLAYLISTS[currentGenre];
+
+  // Sync music volume when prop changes
+  useEffect(() => {
+    audioRef.current.volume = 0.3 * musicVolume;
+  }, [musicVolume]);
 
   // Cleanup audio on unmount
   useEffect(() => {

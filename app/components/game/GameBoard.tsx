@@ -80,6 +80,7 @@ import StatisticsWindow, {
   BuildingCategoryCount,
 } from "../ui/StatisticsWindow";
 import AchievementsWindow, { AchievementProgressData } from "../ui/AchievementsWindow";
+import SettingsWindow from "../ui/SettingsWindow";
 import AchievementToast from "../ui/AchievementToast";
 import { ACHIEVEMENTS, AchievementDefinition, ACHIEVEMENT_MAP } from "@/app/data/achievements";
 import {
@@ -123,9 +124,27 @@ interface GameBoardProps {
   cityName: string;
   initialSaveData?: GameSaveData;
   onReturnToMenu?: () => void;
+  masterVolume: number;
+  sfxVolume: number;
+  musicVolume: number;
+  effectiveMusicVolume: number;
+  onMasterVolumeChange: (v: number) => void;
+  onSfxVolumeChange: (v: number) => void;
+  onMusicVolumeChange: (v: number) => void;
 }
 
-export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }: GameBoardProps) {
+export default function GameBoard({
+  cityName,
+  initialSaveData,
+  onReturnToMenu,
+  masterVolume,
+  sfxVolume,
+  musicVolume,
+  effectiveMusicVolume,
+  onMasterVolumeChange,
+  onSfxVolumeChange,
+  onMusicVolumeChange,
+}: GameBoardProps) {
   // Grid state (only thing React manages now)
   const [grid, setGrid] = useState<GridCell[][]>(createEmptyGrid);
 
@@ -206,6 +225,9 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
   const [currentPopulationStats, setCurrentPopulationStats] = useState({ total: 0, housed: 0, homeless: 0, tourists: 0 });
   const [currentHappinessStats, setCurrentHappinessStats] = useState({ happy: 0, sad: 0, hungry: 0, angry: 0, depressed: 0 });
   const [buildingCountsStats, setBuildingCountsStats] = useState<BuildingCategoryCount[]>([]);
+
+  // Settings state
+  const [isSettingsVisible, setIsSettingsVisible] = useState(false);
 
   // Achievements state
   const [isAchievementsVisible, setIsAchievementsVisible] = useState(false);
@@ -359,6 +381,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
       // Escape — close windows (priority order) or deselect tool
       if (key === "Escape") {
         e.preventDefault();
+        if (isSettingsVisible) { setIsSettingsVisible(false); return; }
         if (isCitizenInfoVisible) { setIsCitizenInfoVisible(false); return; }
         if (isBuildingInfoVisible) { setIsBuildingInfoVisible(false); return; }
         if (isStatisticsVisible) { setIsStatisticsVisible(false); return; }
@@ -463,6 +486,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
     // Right-click — cancel/back (close topmost window or deselect tool)
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
+      if (isSettingsVisible) { setIsSettingsVisible(false); return; }
       if (isCitizenInfoVisible) { setIsCitizenInfoVisible(false); return; }
       if (isBuildingInfoVisible) { setIsBuildingInfoVisible(false); return; }
       if (isStatisticsVisible) { setIsStatisticsVisible(false); return; }
@@ -479,7 +503,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("contextmenu", handleContextMenu);
     };
-  }, [selectedTool, selectedBuildingId, isToolWindowVisible, isCitizenInfoVisible, isBuildingInfoVisible, isStatisticsVisible, isBankWindowVisible, isAchievementsVisible, isCitizenListVisible]);
+  }, [selectedTool, selectedBuildingId, isToolWindowVisible, isCitizenInfoVisible, isBuildingInfoVisible, isStatisticsVisible, isBankWindowVisible, isAchievementsVisible, isCitizenListVisible, isSettingsVisible]);
 
   // Sync driving state with Phaser
   useEffect(() => {
@@ -2456,6 +2480,54 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
             <path d="M10 12H22" stroke="#444" strokeWidth="2.5" strokeLinecap="round"/>
           </svg>
         </button>
+        {/* Settings button */}
+        <button
+          onClick={() => {
+            setIsSettingsVisible((prev) => !prev);
+            playClickSound();
+          }}
+          title="Settings"
+          className="rct-blue-button-interactive"
+          style={{
+            background: "#B0B0B0",
+            border: "2px solid",
+            borderColor: "#D0D0D0 #707070 #707070 #D0D0D0",
+            padding: 0,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: 0,
+            borderTopWidth: 0,
+            boxShadow: "1px 1px 0px #505050",
+            transition: "filter 0.1s",
+            width: 48,
+            height: 48,
+          }}
+          onMouseEnter={(e) =>
+            (e.currentTarget.style.filter = "brightness(1.1)")
+          }
+          onMouseLeave={(e) => (e.currentTarget.style.filter = "none")}
+          onMouseDown={(e) => {
+            e.currentTarget.style.filter = "brightness(0.9)";
+            e.currentTarget.style.borderColor =
+              "#707070 #D0D0D0 #D0D0D0 #707070";
+            e.currentTarget.style.transform = "translate(1px, 1px)";
+            e.currentTarget.style.boxShadow = "inset 1px 1px 0px #505050";
+          }}
+          onMouseUp={(e) => {
+            e.currentTarget.style.filter = "brightness(1.1)";
+            e.currentTarget.style.borderColor =
+              "#D0D0D0 #707070 #707070 #D0D0D0";
+            e.currentTarget.style.transform = "none";
+            e.currentTarget.style.boxShadow = "1px 1px 0px #505050";
+          }}
+        >
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" style={{ display: "block" }}>
+            <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="#444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="#444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
         {/* Save button */}
         <button
           onClick={() => {
@@ -2991,7 +3063,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
           🏆
         </button>
         <MoneyDisplay money={economy.money} />
-        <MusicPlayer onTrackPlay={handleTrackPlay} />
+        <MusicPlayer onTrackPlay={handleTrackPlay} musicVolume={effectiveMusicVolume} />
       </div>
 
       {/* Bank Window */}
@@ -3043,6 +3115,18 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
           currentHappiness={currentHappinessStats}
         />
       )}
+
+      {/* Settings Window */}
+      <SettingsWindow
+        isVisible={isSettingsVisible}
+        onClose={() => setIsSettingsVisible(false)}
+        masterVolume={masterVolume}
+        sfxVolume={sfxVolume}
+        musicVolume={musicVolume}
+        onMasterVolumeChange={onMasterVolumeChange}
+        onSfxVolumeChange={onSfxVolumeChange}
+        onMusicVolumeChange={onMusicVolumeChange}
+      />
 
       {/* Achievements Window */}
       {isAchievementsVisible && (
