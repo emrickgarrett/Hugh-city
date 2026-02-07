@@ -11,7 +11,8 @@ import {
   BuildingDefinition,
   getBuildingEconomics,
 } from "@/app/data/buildings";
-import { playDoubleClickSound, playClickSound } from "@/app/utils/sounds";
+import { playDoubleClickSound, playClickSound, playErrorSound } from "@/app/utils/sounds";
+import { isBuildingUnlocked, getUnlockRequirement } from "@/app/data/buildingUnlocks";
 
 // Format currency
 function formatCurrency(value: number): string {
@@ -106,6 +107,9 @@ interface ToolWindowProps {
   onRotate?: () => void;
   isVisible: boolean;
   onClose: () => void;
+  unlockedBuildingIds?: Set<string>;
+  housedPopulation?: number;
+  dailyRevenue?: number;
 }
 
 // Get the preview sprite for a building (prefer south, fall back to first available)
@@ -147,6 +151,9 @@ export default function ToolWindow({
   onRotate,
   isVisible,
   onClose,
+  unlockedBuildingIds,
+  housedPopulation,
+  dailyRevenue,
 }: ToolWindowProps) {
   // Calculate initial position (lazy to avoid SSR issues)
   const [position, setPosition] = useState(() => {
@@ -582,17 +589,29 @@ export default function ToolWindow({
                 selectedTool === ToolType.Building &&
                 selectedBuildingId === building.id;
 
+              const isLocked = !isBuildingUnlocked(
+                building.id,
+                housedPopulation ?? 0,
+                dailyRevenue ?? 0,
+                unlockedBuildingIds ?? new Set()
+              );
+
               return (
                 <button
                   key={building.id}
                   onClick={() => {
+                    if (isLocked) {
+                      playErrorSound();
+                      setHoveredBuilding(building.id);
+                      return;
+                    }
                     onToolSelect(ToolType.Building);
                     onBuildingSelect(building.id);
                     playClickSound();
                   }}
                   onMouseEnter={() => setHoveredBuilding(building.id)}
                   onMouseLeave={() => setHoveredBuilding(null)}
-                  className={`rct-button ${isSelected ? "active" : ""}`}
+                  className={`rct-button ${isSelected && !isLocked ? "active" : ""}`}
                   style={{
                     display: "flex",
                     flexDirection: "column",
@@ -601,7 +620,9 @@ export default function ToolWindow({
                     padding: 4,
                     minHeight: 60,
                     overflow: "hidden",
-                    background: isSelected
+                    position: "relative",
+                    cursor: isLocked ? "not-allowed" : "pointer",
+                    background: isSelected && !isLocked
                       ? "var(--rct-button-active)"
                       : undefined,
                   }}
@@ -615,6 +636,8 @@ export default function ToolWindow({
                       justifyContent: "center",
                       overflow: "hidden",
                       position: "relative",
+                      opacity: isLocked ? 0.35 : 1,
+                      filter: isLocked ? "grayscale(80%)" : "none",
                     }}
                   >
                     {/* Render at half size then scale up 2x for chunky pixel effect */}
@@ -632,6 +655,20 @@ export default function ToolWindow({
                       }}
                     />
                   </div>
+                  {isLocked && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: 2,
+                        right: 4,
+                        fontSize: 11,
+                        textShadow: "0 1px 2px rgba(0,0,0,0.8)",
+                        lineHeight: 1,
+                      }}
+                    >
+                      🔒
+                    </div>
+                  )}
                 </button>
               );
             })}
@@ -708,6 +745,44 @@ export default function ToolWindow({
                     </span>
                   )}
                 </div>
+
+                {/* Unlock requirements for locked buildings */}
+                {(() => {
+                  const req = getUnlockRequirement(building.id);
+                  const locked = req && !isBuildingUnlocked(
+                    building.id,
+                    housedPopulation ?? 0,
+                    dailyRevenue ?? 0,
+                    unlockedBuildingIds ?? new Set()
+                  );
+                  if (!locked || !req) return null;
+                  return (
+                    <div
+                      style={{
+                        padding: "6px 8px",
+                        background: "rgba(0,0,0,0.3)",
+                        border: "1px solid rgba(255,100,100,0.3)",
+                        borderRadius: 2,
+                      }}
+                    >
+                      <div style={{ fontSize: 12, color: "#ff8888", fontWeight: "bold", marginBottom: 4 }}>
+                        🔒 Locked — {req.tierName}
+                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.9 }}>
+                        Unlock by reaching:
+                      </div>
+                      <div style={{ fontSize: 12, marginTop: 2, display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <span style={{ color: "#88ccff" }}>
+                          {housedPopulation ?? 0}/{req.population} citizens
+                        </span>
+                        <span style={{ opacity: 0.6 }}>or</span>
+                        <span style={{ color: "#88ff88" }}>
+                          ${(dailyRevenue ?? 0).toLocaleString()}/${req.revenue.toLocaleString()} daily revenue
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Description */}
                 <div style={{ opacity: 0.9, fontSize: 13, lineHeight: 1.4 }}>

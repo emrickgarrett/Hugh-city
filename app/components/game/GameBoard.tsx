@@ -27,6 +27,11 @@ import {
   canPlaceRoadSegment,
 } from "./roadUtils";
 import { getBuilding, getBuildingFootprint } from "@/app/data/buildings";
+import {
+  isBuildingUnlocked,
+  getNewlyUnlockedBuildings,
+  getUnlockRequirement,
+} from "@/app/data/buildingUnlocks";
 import { computeDayNightVisuals, DayNightVisuals } from "./dayNightCycle";
 import dynamic from "next/dynamic";
 import type { PhaserGameHandle } from "./phaser/PhaserGame";
@@ -82,6 +87,7 @@ import StatisticsWindow, {
 import AchievementsWindow, { AchievementProgressData } from "../ui/AchievementsWindow";
 import SettingsWindow from "../ui/SettingsWindow";
 import AchievementToast from "../ui/AchievementToast";
+import UnlockToast from "../ui/UnlockToast";
 import { ACHIEVEMENTS, AchievementDefinition, ACHIEVEMENT_MAP } from "@/app/data/achievements";
 import {
   unlockAchievement,
@@ -235,6 +241,13 @@ export default function GameBoard({
   const cityNameRef = useRef(cityName);
   useEffect(() => { cityNameRef.current = cityName; }, [cityName]);
 
+  // Building unlock progression state (per-save)
+  const [unlockedBuildingIds, setUnlockedBuildingIds] = useState<Set<string>>(new Set());
+  const unlockedBuildingIdsRef = useRef(unlockedBuildingIds);
+  useEffect(() => { unlockedBuildingIdsRef.current = unlockedBuildingIds; }, [unlockedBuildingIds]);
+  const [unlockToast, setUnlockToast] = useState<{ tierName: string; count: number } | null>(null);
+  const unlockToastQueueRef = useRef<Array<{ tierName: string; count: number }>>([]);
+
   // Auto-save indicator
   const [showAutoSaveToast, setShowAutoSaveToast] = useState(false);
   const autoSaveToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -314,6 +327,7 @@ export default function GameBoard({
         if (initialSaveData.economy) setEconomy(initialSaveData.economy);
         if (initialSaveData.gameTime) setGameTime(initialSaveData.gameTime);
         if (initialSaveData.gameSpeed !== undefined) setGameSpeed(initialSaveData.gameSpeed);
+        if (initialSaveData.unlockedBuildingIds) setUnlockedBuildingIds(new Set(initialSaveData.unlockedBuildingIds));
         setTimeout(() => {
           for (let i = 0; i < (initialSaveData.characterCount ?? 0); i++) {
             phaserGameRef.current?.spawnCharacter();
@@ -714,6 +728,7 @@ export default function GameBoard({
       gameTime,
       gameSpeed,
       cityName,
+      unlockedBuildingIds: Array.from(unlockedBuildingIds),
     };
     try {
       localStorage.setItem(
@@ -1484,6 +1499,41 @@ export default function GameBoard({
         }
       }
 
+      // Check for building unlocks
+      const newlyUnlocked = getNewlyUnlockedBuildings(
+        housedCount,
+        dailyRevenueRef.current,
+        unlockedBuildingIdsRef.current
+      );
+
+      if (newlyUnlocked.length > 0) {
+        setUnlockedBuildingIds((prev) => {
+          const next = new Set(prev);
+          for (const id of newlyUnlocked) {
+            next.add(id);
+          }
+          return next;
+        });
+
+        // Group newly unlocked buildings by tier for consolidated toasts
+        const tierCounts = new Map<string, number>();
+        for (const id of newlyUnlocked) {
+          const req = getUnlockRequirement(id);
+          if (req) {
+            tierCounts.set(req.tierName, (tierCounts.get(req.tierName) ?? 0) + 1);
+          }
+        }
+
+        for (const [tierName, count] of tierCounts) {
+          unlockToastQueueRef.current.push({ tierName, count });
+        }
+
+        // Show first toast if none currently showing
+        if (!unlockToast && unlockToastQueueRef.current.length > 0) {
+          setUnlockToast(unlockToastQueueRef.current.shift()!);
+        }
+      }
+
       // Persist progress
       saveProgress({
         totalBuildingsPlaced: totalBuildingsPlacedRef.current,
@@ -1659,6 +1709,20 @@ export default function GameBoard({
 
             const building = getBuilding(selectedBuildingId);
             if (!building) break;
+
+            // Check if building is unlocked
+            if (!isBuildingUnlocked(selectedBuildingId, currentPopulationStats.housed, dailyRevenueRef.current, unlockedBuildingIds)) {
+              playErrorSound();
+              const req = getUnlockRequirement(selectedBuildingId);
+              setModalState({
+                isVisible: true,
+                title: "Building Locked",
+                message: req
+                  ? `Reach ${req.population} citizens or $${req.revenue.toLocaleString()}/day revenue to unlock ${building.name}.`
+                  : "This building is locked.",
+              });
+              break;
+            }
 
             // Check if can afford building
             if (!canAffordBuilding(selectedBuildingId)) {
@@ -2286,6 +2350,7 @@ export default function GameBoard({
       gameTime,
       gameSpeed,
       cityName,
+      unlockedBuildingIds: Array.from(unlockedBuildingIds),
     };
 
     try {
@@ -2307,7 +2372,7 @@ export default function GameBoard({
       });
       console.error("Save error:", error);
     }
-  }, [grid, zoom, visualSettings, dayNightEnabled, economy, gameTime, gameSpeed, cityName]);
+  }, [grid, zoom, visualSettings, dayNightEnabled, economy, gameTime, gameSpeed, cityName, unlockedBuildingIds]);
 
   const handleLoadGame = useCallback((saveData: GameSaveData) => {
     try {
@@ -2336,6 +2401,11 @@ export default function GameBoard({
       }
       if (saveData.gameSpeed !== undefined) {
         setGameSpeed(saveData.gameSpeed);
+      }
+      if (saveData.unlockedBuildingIds) {
+        setUnlockedBuildingIds(new Set(saveData.unlockedBuildingIds));
+      } else {
+        setUnlockedBuildingIds(new Set());
       }
 
       // Wait for grid to update, then spawn characters and cars
@@ -3152,6 +3222,18 @@ export default function GameBoard({
         onDismiss={() => setAchievementToast(null)}
       />
 
+      {/* Building Unlock Toast */}
+      <UnlockToast
+        unlock={unlockToast}
+        onDismiss={() => {
+          setUnlockToast(null);
+          // Show next queued toast
+          if (unlockToastQueueRef.current.length > 0) {
+            setTimeout(() => setUnlockToast(unlockToastQueueRef.current.shift()!), 300);
+          }
+        }}
+      />
+
       {/* Auto-save toast */}
       {showAutoSaveToast && (
         <div
@@ -3268,6 +3350,9 @@ export default function GameBoard({
               setSelectedBuildingId(null);
             }
           }}
+          unlockedBuildingIds={unlockedBuildingIds}
+          housedPopulation={currentPopulationStats.housed}
+          dailyRevenue={dailyRevenueRef.current}
         />
 
         {/* Modal */}

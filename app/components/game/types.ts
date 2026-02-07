@@ -235,4 +235,5 @@ export interface GameSaveData {
   gameTime?: GameTime;
   gameSpeed?: GameSpeed;
   cityName?: string; // Optional for backward compat with old saves
+  unlockedBuildingIds?: string[]; // Per-save building progression unlocks
 }
