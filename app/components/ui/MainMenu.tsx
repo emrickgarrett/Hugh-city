@@ -5,20 +5,37 @@ import { playClickSound, playDoubleClickSound } from "@/app/utils/sounds";
 import { GameSaveData } from "@/app/components/game/types";
 import LoadWindow from "./LoadWindow";
 import AchievementsWindow from "./AchievementsWindow";
+import SettingsWindow from "./SettingsWindow";
 
 interface MainMenuProps {
   onNewGame: (cityName: string) => void;
   onLoadGame: (saveData: GameSaveData, saveName: string) => void;
+  masterVolume: number;
+  sfxVolume: number;
+  musicVolume: number;
+  onMasterVolumeChange: (v: number) => void;
+  onSfxVolumeChange: (v: number) => void;
+  onMusicVolumeChange: (v: number) => void;
 }
 
 type MenuView = "main" | "newGame" | "credits";
 
-export default function MainMenu({ onNewGame, onLoadGame }: MainMenuProps) {
+export default function MainMenu({
+  onNewGame,
+  onLoadGame,
+  masterVolume,
+  sfxVolume,
+  musicVolume,
+  onMasterVolumeChange,
+  onSfxVolumeChange,
+  onMusicVolumeChange,
+}: MainMenuProps) {
   const [view, setView] = useState<MenuView>("main");
   const [cityName, setCityName] = useState("");
   const [nameError, setNameError] = useState("");
   const [isLoadWindowVisible, setIsLoadWindowVisible] = useState(false);
   const [isAchievementsVisible, setIsAchievementsVisible] = useState(false);
+  const [isSettingsVisible, setIsSettingsVisible] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Auto-focus input when entering new game view
@@ -155,6 +172,13 @@ export default function MainMenu({ onNewGame, onLoadGame }: MainMenuProps) {
                 onClick={() => {
                   playClickSound();
                   setIsAchievementsVisible(true);
+                }}
+              />
+              <MenuButton
+                label="Settings"
+                onClick={() => {
+                  playClickSound();
+                  setIsSettingsVisible(true);
                 }}
               />
               <MenuButton
@@ -314,6 +338,18 @@ export default function MainMenu({ onNewGame, onLoadGame }: MainMenuProps) {
         isVisible={isLoadWindowVisible}
         onClose={() => setIsLoadWindowVisible(false)}
         onLoad={handleLoadGame}
+      />
+
+      {/* Settings Window overlay */}
+      <SettingsWindow
+        isVisible={isSettingsVisible}
+        onClose={() => setIsSettingsVisible(false)}
+        masterVolume={masterVolume}
+        sfxVolume={sfxVolume}
+        musicVolume={musicVolume}
+        onMasterVolumeChange={onMasterVolumeChange}
+        onSfxVolumeChange={onSfxVolumeChange}
+        onMusicVolumeChange={onMusicVolumeChange}
       />
 
       {/* Achievements Window overlay */}
