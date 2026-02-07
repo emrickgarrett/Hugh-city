@@ -451,21 +451,9 @@ export function getLaneDirection(x: number, y: number, grid?: GridCell[][]): Dir
   
   // Corners - exactly 2 perpendicular connections
   if (connectionCount === 2 && hasVerticalConnections && hasHorizontalConnections) {
-    // Center tiles at corners = turning zone, allow any direction
-    if (isCenterTile) {
-      return null;
-    }
-    
-    // Edge tiles follow the road direction they're on
-    // Horizontal edge tiles (localX = 0 or 3, on horizontal lane)
-    if (isHorizontalLane && !isVerticalLane) {
-      return localY === 1 ? Direction.Left : Direction.Right;
-    }
-    // Vertical edge tiles (localY = 0 or 3, on vertical lane)
-    if (isVerticalLane && !isHorizontalLane) {
-      return localX === 1 ? Direction.Down : Direction.Up;
-    }
-    
+    // ALL tiles at corners are turning zones — return null to allow free movement.
+    // Cars correct to the proper lane when they reach the next straight segment.
+    // This prevents lane correction from fighting with corner turn logic.
     return null;
   }
   
@@ -517,6 +505,85 @@ export function isAtIntersection(x: number, y: number, grid?: GridCell[][]): boo
   
   // Only a true intersection if segments connect in BOTH directions
   return hasVerticalConnection && hasHorizontalConnection;
+}
+
+// Check if a position is at a corner (exactly 2 perpendicular connections)
+// At corners, cars MUST turn — they can't continue straight through
+export function isAtCorner(x: number, y: number, grid?: GridCell[][]): boolean {
+  if (!grid) return false;
+
+  const tileX = Math.floor(x);
+  const tileY = Math.floor(y);
+  const localX = tileX % ROAD_SEGMENT_SIZE;
+  const localY = tileY % ROAD_SEGMENT_SIZE;
+
+  // Must be at center of segment
+  if (!(localX === 1 || localX === 2) || !(localY === 1 || localY === 2)) {
+    return false;
+  }
+
+  const segmentX = Math.floor(tileX / ROAD_SEGMENT_SIZE) * ROAD_SEGMENT_SIZE;
+  const segmentY = Math.floor(tileY / ROAD_SEGMENT_SIZE) * ROAD_SEGMENT_SIZE;
+
+  const hasNorth = hasRoadSegment(grid, segmentX, segmentY - ROAD_SEGMENT_SIZE);
+  const hasSouth = hasRoadSegment(grid, segmentX, segmentY + ROAD_SEGMENT_SIZE);
+  const hasEast = hasRoadSegment(grid, segmentX + ROAD_SEGMENT_SIZE, segmentY);
+  const hasWest = hasRoadSegment(grid, segmentX - ROAD_SEGMENT_SIZE, segmentY);
+
+  const count = (hasNorth ? 1 : 0) + (hasSouth ? 1 : 0) + (hasEast ? 1 : 0) + (hasWest ? 1 : 0);
+  const hasVertical = hasNorth || hasSouth;
+  const hasHorizontal = hasEast || hasWest;
+
+  // Exactly 2 perpendicular connections = corner
+  return count === 2 && hasVertical && hasHorizontal;
+}
+
+// Get the required turn direction at a corner for a given incoming direction.
+// At a corner, a car heading toward a wall MUST turn to the perpendicular exit.
+// Unlike full intersections, corners allow turning at ANY center tile to avoid bottlenecks.
+// Returns the direction the car should turn to, or null if current direction is fine.
+export function getCornerTurnDirection(
+  x: number,
+  y: number,
+  currentDir: Direction,
+  grid: GridCell[][]
+): Direction | null {
+  const tileX = Math.floor(x);
+  const tileY = Math.floor(y);
+
+  const segmentX = Math.floor(tileX / ROAD_SEGMENT_SIZE) * ROAD_SEGMENT_SIZE;
+  const segmentY = Math.floor(tileY / ROAD_SEGMENT_SIZE) * ROAD_SEGMENT_SIZE;
+
+  const hasNorth = hasRoadSegment(grid, segmentX, segmentY - ROAD_SEGMENT_SIZE);
+  const hasSouth = hasRoadSegment(grid, segmentX, segmentY + ROAD_SEGMENT_SIZE);
+  const hasEast = hasRoadSegment(grid, segmentX + ROAD_SEGMENT_SIZE, segmentY);
+  const hasWest = hasRoadSegment(grid, segmentX - ROAD_SEGMENT_SIZE, segmentY);
+
+  // Check if current direction is heading toward a wall (no connection in that direction)
+  const isVerticalDir = currentDir === Direction.Up || currentDir === Direction.Down;
+  const isHorizontalDir = currentDir === Direction.Left || currentDir === Direction.Right;
+
+  if (isVerticalDir) {
+    const goingToward = currentDir === Direction.Up ? hasNorth : hasSouth;
+    if (!goingToward) {
+      // Must turn to the horizontal exit
+      // At corners, we allow the turn at ANY center tile (not just canTurnAtTile points)
+      // to prevent bottlenecks where all cars queue at a single tile
+      if (hasEast) return Direction.Right;
+      if (hasWest) return Direction.Left;
+    }
+  }
+
+  if (isHorizontalDir) {
+    const goingToward = currentDir === Direction.Left ? hasWest : hasEast;
+    if (!goingToward) {
+      // Must turn to the vertical exit
+      if (hasNorth) return Direction.Up;
+      if (hasSouth) return Direction.Down;
+    }
+  }
+
+  return null; // Current direction is fine (heading toward a connected arm)
 }
 
 // Check if a car can turn to a specific direction from current position

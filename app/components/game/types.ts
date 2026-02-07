@@ -74,6 +74,13 @@ export enum CarType {
   Taxi = "taxi",
 }
 
+export enum TaxiState {
+  Cruising = "cruising",
+  PickingUp = "picking_up",
+  Transporting = "transporting",
+  DroppingOff = "dropping_off",
+}
+
 export interface Car {
   id: string;
   x: number;
@@ -82,6 +89,14 @@ export interface Car {
   speed: number;
   waiting: number;
   carType: CarType;
+  // Taxi-specific fields
+  taxiState?: TaxiState;
+  passengerId?: string;
+  pickupTarget?: { x: number; y: number; citizenId: string };
+  dropoffTarget?: { x: number; y: number };
+  cachedCarPath?: Direction[];
+  carPathIndex?: number;
+  lastCarPathTile?: { x: number; y: number };
 }
 
 // Money and economy types
@@ -166,7 +181,7 @@ export interface CharacterWithResidence extends Character {
   residenceY?: number; // Grid Y of residence origin
   currentDestination?: { x: number; y: number; buildingId?: string; buildingOriginX?: number; buildingOriginY?: number }; // Where they're heading
   interactionCooldown?: number; // Time until they can interact with a building again
-  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home" | "leaving_city";
+  state?: "wandering" | "heading_to_building" | "at_building" | "heading_home" | "resting_at_home" | "leaving_city" | "in_taxi";
   stuckCounter?: number; // Counter to detect if stuck in place
   lastPosition?: { x: number; y: number }; // Last tile position to detect if stuck
   name?: string; // Citizen's name (editable by player)
@@ -194,12 +209,25 @@ export interface CharacterWithResidence extends Character {
   cachedPath?: Direction[]; // Sequence of directions to follow
   pathIndex?: number; // Current index in the cached path
   lastPathTile?: { x: number; y: number }; // Tile where path was last calculated
+  // Taxi-related fields
+  taxiId?: string; // ID of the taxi carrying this citizen
+  preTaxiState?: "heading_to_building" | "heading_home"; // State before entering taxi
+  preTaxiDestination?: { x: number; y: number; buildingId?: string; buildingOriginX?: number; buildingOriginY?: number };
 }
 
 export const GRID_WIDTH = 48;
 export const GRID_HEIGHT = 48;
 
 export const CAR_SPEED = 0.05;
+
+// Taxi system constants
+export const TAXI_FARE_BASE = 5;
+export const TAXI_FARE_PER_TILE = 0.5;
+export const TAXI_PICKUP_DISTANCE = 15; // Min Manhattan distance for taxi eligibility
+export const TAXI_PICKUP_RADIUS = 2; // How close taxi must be to citizen for pickup
+export const TAXI_DROPOFF_RADIUS = 3; // How close to destination for dropoff
+export const TAXIS_PER_CITIZEN = 10; // 1 taxi per this many citizens
+export const TAXI_FLEET_CHECK_INTERVAL = 120; // Frames between fleet size checks
 
 // Isometric tile dimensions (44x22 isometric diamond)
 export const TILE_WIDTH = 44;

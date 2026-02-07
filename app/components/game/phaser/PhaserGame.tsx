@@ -45,6 +45,7 @@ export interface PhaserGameHandle {
   setGameTime: (time: GameTime) => void;
   setDayNightState: (state: { skyColor: string; glowIntensity: number; phase: string }) => void;
   isSceneReady: () => boolean;
+  prepareForSave: () => void;
 }
 
 interface PhaserGameProps {
@@ -65,6 +66,7 @@ interface PhaserGameProps {
   onBuildingClick?: (buildingId: string, originX: number, originY: number) => void;
   onCitizenClick?: (citizenId: string) => void;
   onCitizenSpend?: (citizenId: string, amount: number) => void;
+  onTaxiFare?: (citizenId: string, fare: number) => void;
 }
 
 const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
@@ -87,6 +89,7 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
       onBuildingClick,
       onCitizenClick,
       onCitizenSpend,
+      onTaxiFare,
     },
     ref
   ) {
@@ -254,6 +257,9 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
         isSceneReady: () => {
           return sceneRef.current?.getIsReady() ?? false;
         },
+        prepareForSave: () => {
+          sceneRef.current?.prepareForSave();
+        },
       }),
       []
     );
@@ -282,6 +288,7 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
           onBuildingClick: (buildingId, originX, originY) => onBuildingClick?.(buildingId, originX, originY),
           onCitizenClick: (citizenId) => onCitizenClick?.(citizenId),
           onCitizenSpend: (citizenId, amount) => onCitizenSpend?.(citizenId, amount),
+          onTaxiFare: (citizenId, fare) => onTaxiFare?.(citizenId, fare),
         };
         scene.setEventCallbacks(events);
 
@@ -365,10 +372,11 @@ const PhaserGame = forwardRef<PhaserGameHandle, PhaserGameProps>(
           onBuildingClick: (buildingId, originX, originY) => onBuildingClick?.(buildingId, originX, originY),
           onCitizenClick: (citizenId) => onCitizenClick?.(citizenId),
           onCitizenSpend: (citizenId, amount) => onCitizenSpend?.(citizenId, amount),
+          onTaxiFare: (citizenId, fare) => onTaxiFare?.(citizenId, fare),
         };
         sceneRef.current.setEventCallbacks(events);
       }
-    }, [onTileClick, onTileHover, onTilesDrag, onEraserDrag, onRoadDrag, onBuildingInteraction, onBuildingClick, onCitizenClick, onCitizenSpend]);
+    }, [onTileClick, onTileHover, onTilesDrag, onEraserDrag, onRoadDrag, onBuildingInteraction, onBuildingClick, onCitizenClick, onCitizenSpend, onTaxiFare]);
 
     return (
       <div

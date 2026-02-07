@@ -743,6 +743,7 @@ export default function GameBoard({
   // Auto-save silently (no modal, no sound) — saved via ref to avoid stale closures
   const autoSaveRef = useRef<() => void>(() => {});
   autoSaveRef.current = () => {
+    phaserGameRef.current?.prepareForSave();
     const characterCount = phaserGameRef.current?.getCharacterCount() ?? 0;
     const carCount = phaserGameRef.current?.getCarCount() ?? 0;
     const saveData: GameSaveData = {
@@ -2373,22 +2374,10 @@ export default function GameBoard({
     [grid, performDeletion]
   );
 
-  // Spawn handlers (delegate to Phaser)
-  const handleSpawnCar = useCallback(() => {
-    if (phaserGameRef.current) {
-      const success = phaserGameRef.current.spawnCar();
-      if (!success) {
-        setModalState({
-          isVisible: true,
-          title: "Cannot Spawn Car",
-          message: "Please place some roads with asphalt first!",
-        });
-      }
-    }
-  }, []);
-
   // Save/Load functions
   const handleSaveGame = useCallback(() => {
+    // Eject taxi passengers before saving for clean state
+    phaserGameRef.current?.prepareForSave();
     const characterCount = phaserGameRef.current?.getCharacterCount() ?? 0;
     const carCount = phaserGameRef.current?.getCarCount() ?? 0;
 
@@ -3326,6 +3315,9 @@ export default function GameBoard({
             onBuildingClick={handleBuildingClick}
             onCitizenClick={handleCitizenClick}
             onCitizenSpend={handleCitizenSpend}
+            onTaxiFare={(citizenId, fare) => {
+              setEconomy(prev => ({ ...prev, money: prev.money + fare }));
+            }}
           />
         </div>
 
@@ -3338,7 +3330,6 @@ export default function GameBoard({
             setSelectedBuildingId(id);
             setSelectedTool(ToolType.Building);
           }}
-          onSpawnCar={handleSpawnCar}
           onRotate={() => {
             if (selectedTool === ToolType.Building && selectedBuildingId) {
               const building = getBuilding(selectedBuildingId);
