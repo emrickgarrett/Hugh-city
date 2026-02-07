@@ -15,6 +15,7 @@ import {
   Bank,
   ActiveLoan,
   GameSaveData,
+  MOOD_HAPPINESS_WEIGHTS,
 } from "./types";
 import {
   ROAD_SEGMENT_SIZE,
@@ -260,6 +261,10 @@ export default function GameBoard({
   // Tourist leaving toast
   const [touristLeavingToast, setTouristLeavingToast] = useState<string | null>(null);
   const touristLeavingToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // City-wide happiness score (derived from citizen moodlets)
+  const [cityHappiness, setCityHappiness] = useState(50);
+  const cityHappinessRef = useRef(50);
 
   // Achievement progress tracking refs (cumulative, survive across renders)
   const totalBuildingsPlacedRef = useRef(0);
@@ -661,8 +666,11 @@ export default function GameBoard({
       // Deduct operating costs
       newEconomy.money -= totalCosts;
 
-      // Add rent income (collected from citizens)
-      newEconomy.money += totalRentCollected;
+      // Add rent income (collected from citizens) with happiness bonus
+      // Multiplier: 0.5x at 0% happiness, 1.0x at 50%, 1.5x at 100%
+      const rentHappinessMultiplier = 0.5 + (cityHappinessRef.current / 100) * 1.0;
+      const rentBonus = Math.round(totalRentCollected * (rentHappinessMultiplier - 1));
+      newEconomy.money += totalRentCollected + rentBonus;
 
       return newEconomy;
     });
@@ -789,10 +797,12 @@ export default function GameBoard({
           });
         }
 
-        // Auto-migrate tourists based on available housing
+        // Auto-migrate tourists based on available housing, scaled by city happiness
+        // Migration multiplier: 0.25x at 0% happiness, 1.0x at 50%, 1.75x at 100%
         const availableSlots = phaserGameRef.current.getAvailableHousingSlots();
+        const migrationHappinessMultiplier = 0.25 + (cityHappinessRef.current / 100) * 1.5;
         const expectedMigrants = Math.min(
-          MIGRATION_BASE_RATE + availableSlots * MIGRATION_ATTRACTION_FACTOR,
+          (MIGRATION_BASE_RATE + availableSlots * MIGRATION_ATTRACTION_FACTOR) * migrationHappinessMultiplier,
           MIGRATION_MAX_PER_DAY
         );
         const wholePart = Math.floor(expectedMigrants);
@@ -933,6 +943,21 @@ export default function GameBoard({
         });
 
         setCurrentHappinessStats(happinessCount);
+
+        // Compute city-wide happiness score (0-100%)
+        if (characters.length > 0) {
+          let totalWeight = 0;
+          characters.forEach((c) => {
+            const key = String(c.moodlet ?? "null");
+            totalWeight += MOOD_HAPPINESS_WEIGHTS[key] ?? 0.5;
+          });
+          const score = Math.round((totalWeight / characters.length) * 100);
+          setCityHappiness(score);
+          cityHappinessRef.current = score;
+        } else {
+          setCityHappiness(50);
+          cityHappinessRef.current = 50;
+        }
       } catch (e) {
         console.warn("Stats collection error:", e);
       }
@@ -1070,15 +1095,19 @@ export default function GameBoard({
       const buildingKey = `${buildingOriginX},${buildingOriginY}`;
 
       if (interactionType === "income" && economics.incomePerInteraction) {
-        // Generate income from business interaction — only play sound when zoomed in close
+        // Generate income from business interaction — scaled by city happiness
+        // Multiplier: 0.5x at 0% happiness, 1.0x at 50%, 1.5x at 100%
+        const happinessMultiplier = 0.5 + (cityHappinessRef.current / 100) * 1.0;
+        const adjustedIncome = Math.round(economics.incomePerInteraction * happinessMultiplier);
+
         if (zoomRef.current >= 2) playCashSound();
         setEconomy((prev) => ({
           ...prev,
-          money: prev.money + economics.incomePerInteraction!,
+          money: prev.money + adjustedIncome,
         }));
 
         // Track daily revenue for achievements
-        dailyRevenueRef.current += economics.incomePerInteraction;
+        dailyRevenueRef.current += adjustedIncome;
 
         // Immediately check revenue achievements when threshold is crossed
         const rev = dailyRevenueRef.current;
@@ -1112,8 +1141,8 @@ export default function GameBoard({
           };
           newStats.set(buildingKey, {
             ...existing,
-            totalRevenue: existing.totalRevenue + economics.incomePerInteraction!,
-            monthlyRevenue: existing.monthlyRevenue + economics.incomePerInteraction!,
+            totalRevenue: existing.totalRevenue + adjustedIncome,
+            monthlyRevenue: existing.monthlyRevenue + adjustedIncome,
             interactionsThisMonth: existing.interactionsThisMonth + 1,
           });
           return newStats;
@@ -3196,6 +3225,7 @@ export default function GameBoard({
           buildingCounts={buildingCountsStats}
           currentPopulation={currentPopulationStats}
           currentHappiness={currentHappinessStats}
+          cityHappiness={cityHappiness}
         />
       )}
 

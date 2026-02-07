@@ -47,6 +47,7 @@ interface StatisticsWindowProps {
     angry: number;
     depressed: number;
   };
+  cityHappiness: number;
 }
 
 type TabType = "population" | "happiness" | "buildings";
@@ -263,6 +264,7 @@ function StatisticsWindowInner({
   buildingCounts,
   currentPopulation,
   currentHappiness,
+  cityHappiness,
 }: StatisticsWindowProps) {
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -546,8 +548,59 @@ function StatisticsWindowInner({
           currentHappiness.angry +
           currentHappiness.depressed;
 
+        const revenueMultiplier = (0.5 + (cityHappiness / 100) * 1.0).toFixed(2);
+        const migrationMultiplier = (0.25 + (cityHappiness / 100) * 1.5).toFixed(2);
+        const happinessColor = cityHappiness >= 60 ? "#00ff00" : cityHappiness >= 30 ? "#ffa500" : "#ff4444";
+
         return (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* City Happiness Score */}
+            <div
+              style={{
+                background: "#000",
+                border: "2px solid",
+                borderColor: `${GRAY_COLORS.shadow} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.borderDark} ${GRAY_COLORS.shadow}`,
+                padding: "12px",
+                textAlign: "center",
+              }}
+            >
+              <div
+                style={{
+                  color: "#888",
+                  fontSize: 10,
+                  fontFamily: "var(--font-pixelify), monospace",
+                  marginBottom: 4,
+                }}
+              >
+                CITY HAPPINESS
+              </div>
+              <div
+                style={{
+                  fontSize: 32,
+                  fontWeight: "bold",
+                  fontFamily: "var(--font-pixelify), monospace",
+                  color: happinessColor,
+                  lineHeight: 1,
+                }}
+              >
+                {cityHappiness}%
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "center",
+                  gap: 16,
+                  marginTop: 8,
+                  fontSize: 10,
+                  fontFamily: "var(--font-pixelify), monospace",
+                  color: "#888",
+                }}
+              >
+                <span>Revenue: <span style={{ color: Number(revenueMultiplier) >= 1 ? "#4ade80" : "#ff6b6b" }}>{revenueMultiplier}x</span></span>
+                <span>Migration: <span style={{ color: Number(migrationMultiplier) >= 1 ? "#4ade80" : "#ff6b6b" }}>{migrationMultiplier}x</span></span>
+              </div>
+            </div>
+
             {/* Current Mood Distribution */}
             <div
               style={{
@@ -951,6 +1004,8 @@ function arePropsEqual(
   if (prevProps.currentHappiness.hungry !== nextProps.currentHappiness.hungry) return false;
   if (prevProps.currentHappiness.angry !== nextProps.currentHappiness.angry) return false;
   if (prevProps.currentHappiness.depressed !== nextProps.currentHappiness.depressed) return false;
+
+  if (prevProps.cityHappiness !== nextProps.cityHappiness) return false;
 
   return true;
 }

@@ -8,6 +8,7 @@ import {
   CharacterWithResidence,
   MoodletType,
   GridCell,
+  MOOD_SPEED_MULTIPLIERS,
 } from "../../types";
 import { getBuilding, getBuildingFootprint, getBuildingEconomics } from "@/app/data/buildings";
 import { directionVectors, oppositeDirection, allDirections } from "../utils/directions";
@@ -388,7 +389,8 @@ export class CitizenAISystem {
     }
 
     const { x, y, direction, speed } = char;
-    const effectiveSpeed = speed * (ctx.gameSpeed === GameSpeed.Paused ? 0 : ctx.gameSpeed);
+    const moodSpeedMultiplier = MOOD_SPEED_MULTIPLIERS[String(char.moodlet ?? "null")] ?? 1.0;
+    const effectiveSpeed = speed * moodSpeedMultiplier * (ctx.gameSpeed === GameSpeed.Paused ? 0 : ctx.gameSpeed);
     const vec = directionVectors[direction];
     const tileX = Math.floor(x);
     const tileY = Math.floor(y);
@@ -530,13 +532,22 @@ export class CitizenAISystem {
     }
     // If citizen has money and is wandering, prioritize needs
     else if (state === "wandering" && !currentDestination && !isBroke) {
-      const isDepressed = char.moodlet === "depressed";
       const framesSinceFood = ((char as any).framesSinceLastFood || 0);
       const needsFood = !char.ateToday || framesSinceFood >= 1200;
       const needsEntertainment = !char.entertainedToday;
 
-      if (isDepressed && Math.random() > 0.2) {
-        // Skip business visits if depressed
+      // Mood-based business visit skipping
+      let skipBusinessVisit = false;
+      if (char.moodlet === "depressed" && Math.random() > 0.2) {
+        skipBusinessVisit = true; // 80% skip
+      } else if (char.moodlet === "angry" && Math.random() > 0.5) {
+        skipBusinessVisit = true; // 50% skip
+      } else if (char.moodlet === "sad" && !needsFood && Math.random() > 0.8) {
+        skipBusinessVisit = true; // 20% skip (entertainment only, still seeks food)
+      }
+
+      if (skipBusinessVisit) {
+        // Skip business visits based on mood
       } else {
 
       let priorityBuildings: Array<{ buildingId: string; originX: number; originY: number; distance: number }> = [];
@@ -741,7 +752,11 @@ export class CitizenAISystem {
       if (!canInteract && currentDestination) {
         state = "heading_to_building";
       } else if (!newInteractionCooldown || newInteractionCooldown === 0) {
-        if (char.residenceX !== undefined && char.residenceY !== undefined) {
+        // Happy citizens have a 10% chance to keep wandering for bonus visits
+        if (char.moodlet === "happy" && Math.random() < 0.1) {
+          state = "wandering";
+          currentDestination = undefined;
+        } else if (char.residenceX !== undefined && char.residenceY !== undefined) {
           const residenceCell = ctx.grid[char.residenceY]?.[char.residenceX];
           if (residenceCell && residenceCell.buildingId) {
             const adjacentTiles = this.pathfinding.getBuildingAdjacentTiles(
