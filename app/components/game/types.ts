@@ -140,6 +140,26 @@ export interface Moodlet {
   color: string;
 }
 
+// Happiness weights for computing city-wide happiness score (0-100%)
+export const MOOD_HAPPINESS_WEIGHTS: Record<string, number> = {
+  happy: 1.0,
+  sad: 0.4,
+  hungry: 0.3,
+  angry: 0.15,
+  depressed: 0.0,
+  null: 0.5, // New/neutral citizens
+};
+
+// Per-citizen speed multipliers based on moodlet
+export const MOOD_SPEED_MULTIPLIERS: Record<string, number> = {
+  happy: 1.15,
+  angry: 1.05,
+  null: 1.0,
+  sad: 0.90,
+  hungry: 0.85,
+  depressed: 0.70,
+};
+
 // Extended Character with residence and destination
 export interface CharacterWithResidence extends Character {
   residenceX?: number; // Grid X of residence origin

@@ -15,6 +15,7 @@ import {
   Bank,
   ActiveLoan,
   GameSaveData,
+  MOOD_HAPPINESS_WEIGHTS,
 } from "./types";
 import {
   ROAD_SEGMENT_SIZE,
@@ -261,6 +262,10 @@ export default function GameBoard({
   const [touristLeavingToast, setTouristLeavingToast] = useState<string | null>(null);
   const touristLeavingToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // City-wide happiness score (derived from citizen moodlets)
+  const [cityHappiness, setCityHappiness] = useState(50);
+  const cityHappinessRef = useRef(50);
+
   // Achievement progress tracking refs (cumulative, survive across renders)
   const totalBuildingsPlacedRef = useRef(0);
   const totalDemolitionsRef = useRef(0);
@@ -319,11 +324,15 @@ export default function GameBoard({
   }, []);
 
   // Load initial save data if provided (from main menu "Load Game")
+  // Uses a ref to prevent React Strict Mode double-invocation from spawning
+  // characters twice (two tryLoad polling loops would otherwise both fire)
   const initialLoadDoneRef = useRef(false);
   useEffect(() => {
     if (!initialSaveData || initialLoadDoneRef.current) return;
 
+    let cancelled = false;
     const tryLoad = () => {
+      if (cancelled || initialLoadDoneRef.current) return;
       if (phaserGameRef.current?.isSceneReady()) {
         initialLoadDoneRef.current = true;
         // Restore grid
@@ -337,7 +346,13 @@ export default function GameBoard({
         if (initialSaveData.gameTime) setGameTime(initialSaveData.gameTime);
         if (initialSaveData.gameSpeed !== undefined) setGameSpeed(initialSaveData.gameSpeed);
         if (initialSaveData.unlockedBuildingIds) setUnlockedBuildingIds(new Set(initialSaveData.unlockedBuildingIds));
+        // Sync day/month refs so day-change useEffect doesn't trigger migration on load
+        if (initialSaveData.gameTime) {
+          prevDayRef.current = initialSaveData.gameTime.day;
+          prevMonthRef.current = initialSaveData.gameTime.month;
+        }
         setTimeout(() => {
+          if (cancelled) return;
           for (let i = 0; i < (initialSaveData.characterCount ?? 0); i++) {
             phaserGameRef.current?.spawnCharacter();
           }
@@ -351,6 +366,8 @@ export default function GameBoard({
       }
     };
     tryLoad();
+
+    return () => { cancelled = true; };
   }, [initialSaveData]);
 
   // Day/Night cycle visual computations
@@ -661,8 +678,11 @@ export default function GameBoard({
       // Deduct operating costs
       newEconomy.money -= totalCosts;
 
-      // Add rent income (collected from citizens)
-      newEconomy.money += totalRentCollected;
+      // Add rent income (collected from citizens) with happiness bonus
+      // Multiplier: 0.5x at 0% happiness, 1.0x at 50%, 1.5x at 100%
+      const rentHappinessMultiplier = 0.5 + (cityHappinessRef.current / 100) * 1.0;
+      const rentBonus = Math.round(totalRentCollected * (rentHappinessMultiplier - 1));
+      newEconomy.money += totalRentCollected + rentBonus;
 
       return newEconomy;
     });
@@ -789,10 +809,12 @@ export default function GameBoard({
           });
         }
 
-        // Auto-migrate tourists based on available housing
+        // Auto-migrate tourists based on available housing, scaled by city happiness
+        // Migration multiplier: 0.25x at 0% happiness, 1.0x at 50%, 1.75x at 100%
         const availableSlots = phaserGameRef.current.getAvailableHousingSlots();
+        const migrationHappinessMultiplier = 0.25 + (cityHappinessRef.current / 100) * 1.5;
         const expectedMigrants = Math.min(
-          MIGRATION_BASE_RATE + availableSlots * MIGRATION_ATTRACTION_FACTOR,
+          (MIGRATION_BASE_RATE + availableSlots * MIGRATION_ATTRACTION_FACTOR) * migrationHappinessMultiplier,
           MIGRATION_MAX_PER_DAY
         );
         const wholePart = Math.floor(expectedMigrants);
@@ -933,6 +955,21 @@ export default function GameBoard({
         });
 
         setCurrentHappinessStats(happinessCount);
+
+        // Compute city-wide happiness score (0-100%)
+        if (characters.length > 0) {
+          let totalWeight = 0;
+          characters.forEach((c) => {
+            const key = String(c.moodlet ?? "null");
+            totalWeight += MOOD_HAPPINESS_WEIGHTS[key] ?? 0.5;
+          });
+          const score = Math.round((totalWeight / characters.length) * 100);
+          setCityHappiness(score);
+          cityHappinessRef.current = score;
+        } else {
+          setCityHappiness(50);
+          cityHappinessRef.current = 50;
+        }
       } catch (e) {
         console.warn("Stats collection error:", e);
       }
@@ -1070,15 +1107,19 @@ export default function GameBoard({
       const buildingKey = `${buildingOriginX},${buildingOriginY}`;
 
       if (interactionType === "income" && economics.incomePerInteraction) {
-        // Generate income from business interaction — only play sound when zoomed in close
+        // Generate income from business interaction — scaled by city happiness
+        // Multiplier: 0.5x at 0% happiness, 1.0x at 50%, 1.5x at 100%
+        const happinessMultiplier = 0.5 + (cityHappinessRef.current / 100) * 1.0;
+        const adjustedIncome = Math.round(economics.incomePerInteraction * happinessMultiplier);
+
         if (zoomRef.current >= 2) playCashSound();
         setEconomy((prev) => ({
           ...prev,
-          money: prev.money + economics.incomePerInteraction!,
+          money: prev.money + adjustedIncome,
         }));
 
         // Track daily revenue for achievements
-        dailyRevenueRef.current += economics.incomePerInteraction;
+        dailyRevenueRef.current += adjustedIncome;
 
         // Immediately check revenue achievements when threshold is crossed
         const rev = dailyRevenueRef.current;
@@ -1112,8 +1153,8 @@ export default function GameBoard({
           };
           newStats.set(buildingKey, {
             ...existing,
-            totalRevenue: existing.totalRevenue + economics.incomePerInteraction!,
-            monthlyRevenue: existing.monthlyRevenue + economics.incomePerInteraction!,
+            totalRevenue: existing.totalRevenue + adjustedIncome,
+            monthlyRevenue: existing.monthlyRevenue + adjustedIncome,
             interactionsThisMonth: existing.interactionsThisMonth + 1,
           });
           return newStats;
@@ -2387,65 +2428,6 @@ export default function GameBoard({
     }
   }, [grid, zoom, visualSettings, dayNightEnabled, economy, gameTime, gameSpeed, cityName, unlockedBuildingIds]);
 
-  const handleLoadGame = useCallback((saveData: GameSaveData) => {
-    try {
-      // Restore grid
-      setGrid(saveData.grid);
-
-      // Clear existing characters and cars
-      phaserGameRef.current?.clearCharacters();
-      phaserGameRef.current?.clearCars();
-
-      // Restore UI state
-      if (saveData.zoom !== undefined) {
-        setZoom(saveData.zoom);
-      }
-      if (saveData.visualSettings) {
-        setVisualSettings(saveData.visualSettings);
-      }
-      if (saveData.dayNightEnabled !== undefined) {
-        setDayNightEnabled(saveData.dayNightEnabled);
-      }
-      if (saveData.economy) {
-        setEconomy(saveData.economy);
-      }
-      if (saveData.gameTime) {
-        setGameTime(saveData.gameTime);
-      }
-      if (saveData.gameSpeed !== undefined) {
-        setGameSpeed(saveData.gameSpeed);
-      }
-      if (saveData.unlockedBuildingIds) {
-        setUnlockedBuildingIds(new Set(saveData.unlockedBuildingIds));
-      } else {
-        setUnlockedBuildingIds(new Set());
-      }
-
-      // Wait for grid to update, then spawn characters and cars
-      setTimeout(() => {
-        for (let i = 0; i < (saveData.characterCount ?? 0); i++) {
-          phaserGameRef.current?.spawnCharacter();
-        }
-        for (let i = 0; i < (saveData.carCount ?? 0); i++) {
-          phaserGameRef.current?.spawnCar();
-        }
-      }, 100);
-
-      setModalState({
-        isVisible: true,
-        title: "Game Loaded",
-        message: "Game loaded successfully!",
-      });
-      playDoubleClickSound();
-    } catch (error) {
-      setModalState({
-        isVisible: true,
-        title: "Load Failed",
-        message: "Failed to load game!",
-      });
-      console.error("Load error:", error);
-    }
-  }, []);
 
   // Zoom controls
   const handleZoomIn = useCallback(() => {
@@ -3196,6 +3178,7 @@ export default function GameBoard({
           buildingCounts={buildingCountsStats}
           currentPopulation={currentPopulationStats}
           currentHappiness={currentHappinessStats}
+          cityHappiness={cityHappiness}
         />
       )}
 
