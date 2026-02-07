@@ -33,6 +33,11 @@ import {
   getUnlockRequirement,
 } from "@/app/data/buildingUnlocks";
 import { computeDayNightVisuals, DayNightVisuals } from "./dayNightCycle";
+
+// Auto-migration constants
+const MIGRATION_BASE_RATE = 0.1; // ~1 tourist every 10 days with no housing
+const MIGRATION_ATTRACTION_FACTOR = 0.15; // Per empty housing slot, extra daily probability
+const MIGRATION_MAX_PER_DAY = 5; // Hard cap to prevent flooding
 import dynamic from "next/dynamic";
 import type { PhaserGameHandle } from "./phaser/PhaserGame";
 import {
@@ -251,6 +256,10 @@ export default function GameBoard({
   // Auto-save indicator
   const [showAutoSaveToast, setShowAutoSaveToast] = useState(false);
   const autoSaveToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Tourist leaving toast
+  const [touristLeavingToast, setTouristLeavingToast] = useState<string | null>(null);
+  const touristLeavingToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Achievement progress tracking refs (cumulative, survive across renders)
   const totalBuildingsPlacedRef = useRef(0);
@@ -761,19 +770,36 @@ export default function GameBoard({
 
         // Check for expired tourists every day
         const { leaving, becameHomeless } = phaserGameRef.current.removeTourists();
-        if (leaving > 0 || becameHomeless > 0) {
-          const parts: string[] = [];
-          if (leaving > 0) {
-            parts.push(`${leaving} tourist${leaving > 1 ? 's' : ''} couldn't find housing and ${leaving > 1 ? 'are' : 'is'} leaving the city`);
-          }
-          if (becameHomeless > 0) {
-            parts.push(`${becameHomeless} tourist${becameHomeless > 1 ? 's have' : ' has'} decided to stay as homeless citizen${becameHomeless > 1 ? 's' : ''}`);
-          }
+
+        // Tourists leaving → subtle toast notification (not a modal)
+        if (leaving > 0) {
+          if (touristLeavingToastTimerRef.current) clearTimeout(touristLeavingToastTimerRef.current);
+          setTouristLeavingToast(
+            `${leaving} tourist${leaving > 1 ? 's' : ''} left the city`
+          );
+          touristLeavingToastTimerRef.current = setTimeout(() => setTouristLeavingToast(null), 3000);
+        }
+
+        // Tourists becoming homeless → modal (important event the user should know about)
+        if (becameHomeless > 0) {
           setModalState({
             isVisible: true,
-            title: leaving > 0 && becameHomeless > 0 ? "Tourists Update" : leaving > 0 ? "Tourists Leaving" : "Tourists Staying",
-            message: parts.join('. ') + '.',
+            title: "Tourists Staying",
+            message: `${becameHomeless} tourist${becameHomeless > 1 ? 's have' : ' has'} decided to stay as homeless citizen${becameHomeless > 1 ? 's' : ''}.`,
           });
+        }
+
+        // Auto-migrate tourists based on available housing
+        const availableSlots = phaserGameRef.current.getAvailableHousingSlots();
+        const expectedMigrants = Math.min(
+          MIGRATION_BASE_RATE + availableSlots * MIGRATION_ATTRACTION_FACTOR,
+          MIGRATION_MAX_PER_DAY
+        );
+        const wholePart = Math.floor(expectedMigrants);
+        const fractionalPart = expectedMigrants - wholePart;
+        const migrants = wholePart + (Math.random() < fractionalPart ? 1 : 0);
+        for (let i = 0; i < migrants; i++) {
+          phaserGameRef.current.spawnCharacter();
         }
       }
     }
@@ -2307,19 +2333,6 @@ export default function GameBoard({
   );
 
   // Spawn handlers (delegate to Phaser)
-  const handleSpawnCharacter = useCallback(() => {
-    if (phaserGameRef.current) {
-      const success = phaserGameRef.current.spawnCharacter();
-      if (!success) {
-        setModalState({
-          isVisible: true,
-          title: "Cannot Spawn Character",
-          message: "Please place some roads first!",
-        });
-      }
-    }
-  }, []);
-
   const handleSpawnCar = useCallback(() => {
     if (phaserGameRef.current) {
       const success = phaserGameRef.current.spawnCar();
@@ -3259,6 +3272,30 @@ export default function GameBoard({
         </div>
       )}
 
+      {touristLeavingToast && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 60,
+            left: 12,
+            zIndex: 1500,
+            background: "rgba(0, 0, 0, 0.7)",
+            color: "#aaa",
+            padding: "6px 14px",
+            borderRadius: 4,
+            fontSize: 13,
+            fontFamily: "var(--font-pixelify), monospace",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            animation: "fadeInOut 3s ease-in-out",
+            pointerEvents: "none",
+          }}
+        >
+          👋 {touristLeavingToast}
+        </div>
+      )}
+
       {/* Main game area */}
       <div
         style={{
@@ -3318,7 +3355,6 @@ export default function GameBoard({
             setSelectedBuildingId(id);
             setSelectedTool(ToolType.Building);
           }}
-          onSpawnCharacter={handleSpawnCharacter}
           onSpawnCar={handleSpawnCar}
           onRotate={() => {
             if (selectedTool === ToolType.Building && selectedBuildingId) {

@@ -102,7 +102,6 @@ interface ToolWindowProps {
   selectedBuildingId: string | null;
   onToolSelect: (tool: ToolType) => void;
   onBuildingSelect: (buildingId: string) => void;
-  onSpawnCharacter: () => void;
   onSpawnCar: () => void;
   onRotate?: () => void;
   isVisible: boolean;
@@ -146,7 +145,6 @@ export default function ToolWindow({
   selectedBuildingId,
   onToolSelect,
   onBuildingSelect,
-  onSpawnCharacter,
   onSpawnCar,
   onRotate,
   isVisible,
@@ -529,26 +527,6 @@ export default function ToolWindow({
 
             {/* Spawn buttons */}
             <div style={{ display: "flex", gap: 4 }}>
-              <button
-                onClick={() => {
-                  onSpawnCharacter();
-                  playClickSound();
-                }}
-                className="rct-button"
-                style={{
-                  flex: 1,
-                  padding: "8px 12px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  fontSize: 14,
-                }}
-              >
-                <span style={{ fontSize: 14 }}>🍌</span>
-                <span>Spawn Citizen</span>
-              </button>
-
               <button
                 onClick={() => {
                   onSpawnCar();

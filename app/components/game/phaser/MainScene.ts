@@ -1590,6 +1590,31 @@ export class MainScene extends Phaser.Scene {
     return residents ? residents.length : 0;
   }
 
+  getAvailableHousingSlots(): number {
+    let totalCapacity = 0;
+    let totalOccupied = 0;
+
+    for (let y = 0; y < GRID_HEIGHT; y++) {
+      for (let x = 0; x < GRID_WIDTH; x++) {
+        const cell = this.grid[y][x];
+        if (cell.type === TileType.Building && cell.isOrigin && cell.buildingId) {
+          const building = getBuilding(cell.buildingId);
+          if (building && building.category === "residential") {
+            const economics = getBuildingEconomics(building);
+            if (economics.maxResidents) {
+              totalCapacity += economics.maxResidents;
+              const buildingKey = `${x},${y}`;
+              const residents = this.buildingOccupancy.get(buildingKey);
+              totalOccupied += residents ? residents.length : 0;
+            }
+          }
+        }
+      }
+    }
+
+    return Math.max(0, totalCapacity - totalOccupied);
+  }
+
   // ============================================
   // RENDERING
   // ============================================
