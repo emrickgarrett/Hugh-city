@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Bank, ActiveLoan } from "../game/types";
-import { playDoubleClickSound, playClickSound } from "@/app/utils/sounds";
+import { playDoubleClickSound, playClickSound, playCashSound, playErrorSound } from "@/app/utils/sounds";
 
 interface BankWindowProps {
   isVisible: boolean;
@@ -276,7 +276,7 @@ export default function BankWindow({
                       <button
                         onClick={() => {
                           onTakeLoan(bank.id);
-                          playDoubleClickSound();
+                          playCashSound();
                         }}
                         style={{
                           background: "#6CA6E8",
@@ -317,9 +317,9 @@ export default function BankWindow({
                         onClick={() => {
                           if (canPayLoan(bank)) {
                             onPayLoan(bank.id);
-                            playDoubleClickSound();
+                            playCashSound();
                           } else {
-                            playClickSound();
+                            playErrorSound();
                           }
                         }}
                         disabled={!canPayLoan(bank)}

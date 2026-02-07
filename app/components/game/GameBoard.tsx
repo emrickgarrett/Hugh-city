@@ -37,6 +37,13 @@ import {
   playOpenSound,
   playClickSound,
   playDoubleClickSound,
+  playErrorSound,
+  playZoomSound,
+  playSpeedUpSound,
+  playSpeedDownSound,
+  playPauseSound,
+  playUnpauseSound,
+  playCashSound,
 } from "@/app/utils/sounds";
 
 // Dynamically import PhaserGame (no SSR - Phaser needs browser APIs)
@@ -125,6 +132,8 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
   // UI state
   const [selectedTool, setSelectedTool] = useState<ToolType>(ToolType.None);
   const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(zoom);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
   const [debugPaths, setDebugPaths] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [isToolWindowVisible, setIsToolWindowVisible] = useState(false);
@@ -416,9 +425,15 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
       // Space or P — Toggle pause
       if (key === " " || key === "p" || key === "P") {
         e.preventDefault();
-        setGameSpeed((prev) =>
-          prev === GameSpeed.Paused ? GameSpeed.Normal : GameSpeed.Paused
-        );
+        setGameSpeed((prev) => {
+          if (prev === GameSpeed.Paused) {
+            playUnpauseSound();
+            return GameSpeed.Normal;
+          } else {
+            playPauseSound();
+            return GameSpeed.Paused;
+          }
+        });
         return;
       }
 
@@ -426,8 +441,8 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
       if (key === "+" || key === "=") {
         e.preventDefault();
         setGameSpeed((prev) => {
-          if (prev === GameSpeed.Paused) return GameSpeed.Normal;
-          if (prev === GameSpeed.Normal) return GameSpeed.Fast;
+          if (prev === GameSpeed.Paused) { playUnpauseSound(); return GameSpeed.Normal; }
+          if (prev === GameSpeed.Normal) { playSpeedUpSound(); return GameSpeed.Fast; }
           return prev;
         });
         return;
@@ -437,8 +452,8 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
       if (key === "-") {
         e.preventDefault();
         setGameSpeed((prev) => {
-          if (prev === GameSpeed.Fast) return GameSpeed.Normal;
-          if (prev === GameSpeed.Normal) return GameSpeed.Paused;
+          if (prev === GameSpeed.Fast) { playSpeedDownSound(); return GameSpeed.Normal; }
+          if (prev === GameSpeed.Normal) { playPauseSound(); return GameSpeed.Paused; }
           return prev;
         });
         return;
@@ -942,6 +957,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
       if (!loan) return;
 
       if (economy.money < loan.remainingBalance) {
+        playErrorSound();
         setModalState({
           isVisible: true,
           title: "Insufficient Funds",
@@ -989,7 +1005,8 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
       const buildingKey = `${buildingOriginX},${buildingOriginY}`;
 
       if (interactionType === "income" && economics.incomePerInteraction) {
-        // Generate income from business interaction
+        // Generate income from business interaction — only play sound when zoomed in close
+        if (zoomRef.current >= 2) playCashSound();
         setEconomy((prev) => ({
           ...prev,
           money: prev.money + economics.incomePerInteraction!,
@@ -1471,6 +1488,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
           case ToolType.RoadNetwork: {
             // Check if can afford road
             if (!canAffordRoad()) {
+              playErrorSound();
               setModalState({
                 isVisible: true,
                 title: "Insufficient Funds",
@@ -1620,6 +1638,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
 
             // Check if can afford building
             if (!canAffordBuilding(selectedBuildingId)) {
+              playErrorSound();
               const economics = getBuildingEconomics(building);
               setModalState({
                 isVisible: true,
@@ -2323,6 +2342,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
 
   // Zoom controls
   const handleZoomIn = useCallback(() => {
+    playZoomSound();
     setZoom((prev) => {
       const currentIndex = ZOOM_LEVELS.indexOf(prev);
       if (currentIndex === -1) {
@@ -2337,6 +2357,7 @@ export default function GameBoard({ cityName, initialSaveData, onReturnToMenu }:
   }, []);
 
   const handleZoomOut = useCallback(() => {
+    playZoomSound();
     setZoom((prev) => {
       const currentIndex = ZOOM_LEVELS.indexOf(prev);
       if (currentIndex === -1) {

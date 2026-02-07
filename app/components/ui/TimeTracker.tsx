@@ -1,7 +1,7 @@
 "use client";
 
 import { GameTime, GameSpeed } from "../game/types";
-import { playClickSound } from "@/app/utils/sounds";
+import { playClickSound, playSpeedUpSound, playSpeedDownSound, playPauseSound, playUnpauseSound } from "@/app/utils/sounds";
 
 interface TimeTrackerProps {
   gameTime: GameTime;
@@ -93,7 +93,16 @@ export default function TimeTracker({
         ? GameSpeed.Fast
         : GameSpeed.Paused;
     onSpeedChange(nextSpeed);
-    playClickSound();
+    // Play appropriate sound based on speed transition
+    if (nextSpeed === GameSpeed.Paused) {
+      playPauseSound();
+    } else if (nextSpeed === GameSpeed.Fast) {
+      playSpeedUpSound();
+    } else if (gameSpeed === GameSpeed.Paused) {
+      playUnpauseSound();
+    } else {
+      playSpeedDownSound();
+    }
   };
 
   const toggleDayNight = () => {
