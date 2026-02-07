@@ -324,11 +324,15 @@ export default function GameBoard({
   }, []);
 
   // Load initial save data if provided (from main menu "Load Game")
+  // Uses a ref to prevent React Strict Mode double-invocation from spawning
+  // characters twice (two tryLoad polling loops would otherwise both fire)
   const initialLoadDoneRef = useRef(false);
   useEffect(() => {
     if (!initialSaveData || initialLoadDoneRef.current) return;
 
+    let cancelled = false;
     const tryLoad = () => {
+      if (cancelled || initialLoadDoneRef.current) return;
       if (phaserGameRef.current?.isSceneReady()) {
         initialLoadDoneRef.current = true;
         // Restore grid
@@ -342,7 +346,13 @@ export default function GameBoard({
         if (initialSaveData.gameTime) setGameTime(initialSaveData.gameTime);
         if (initialSaveData.gameSpeed !== undefined) setGameSpeed(initialSaveData.gameSpeed);
         if (initialSaveData.unlockedBuildingIds) setUnlockedBuildingIds(new Set(initialSaveData.unlockedBuildingIds));
+        // Sync day/month refs so day-change useEffect doesn't trigger migration on load
+        if (initialSaveData.gameTime) {
+          prevDayRef.current = initialSaveData.gameTime.day;
+          prevMonthRef.current = initialSaveData.gameTime.month;
+        }
         setTimeout(() => {
+          if (cancelled) return;
           for (let i = 0; i < (initialSaveData.characterCount ?? 0); i++) {
             phaserGameRef.current?.spawnCharacter();
           }
@@ -356,6 +366,8 @@ export default function GameBoard({
       }
     };
     tryLoad();
+
+    return () => { cancelled = true; };
   }, [initialSaveData]);
 
   // Day/Night cycle visual computations
@@ -2416,65 +2428,6 @@ export default function GameBoard({
     }
   }, [grid, zoom, visualSettings, dayNightEnabled, economy, gameTime, gameSpeed, cityName, unlockedBuildingIds]);
 
-  const handleLoadGame = useCallback((saveData: GameSaveData) => {
-    try {
-      // Restore grid
-      setGrid(saveData.grid);
-
-      // Clear existing characters and cars
-      phaserGameRef.current?.clearCharacters();
-      phaserGameRef.current?.clearCars();
-
-      // Restore UI state
-      if (saveData.zoom !== undefined) {
-        setZoom(saveData.zoom);
-      }
-      if (saveData.visualSettings) {
-        setVisualSettings(saveData.visualSettings);
-      }
-      if (saveData.dayNightEnabled !== undefined) {
-        setDayNightEnabled(saveData.dayNightEnabled);
-      }
-      if (saveData.economy) {
-        setEconomy(saveData.economy);
-      }
-      if (saveData.gameTime) {
-        setGameTime(saveData.gameTime);
-      }
-      if (saveData.gameSpeed !== undefined) {
-        setGameSpeed(saveData.gameSpeed);
-      }
-      if (saveData.unlockedBuildingIds) {
-        setUnlockedBuildingIds(new Set(saveData.unlockedBuildingIds));
-      } else {
-        setUnlockedBuildingIds(new Set());
-      }
-
-      // Wait for grid to update, then spawn characters and cars
-      setTimeout(() => {
-        for (let i = 0; i < (saveData.characterCount ?? 0); i++) {
-          phaserGameRef.current?.spawnCharacter();
-        }
-        for (let i = 0; i < (saveData.carCount ?? 0); i++) {
-          phaserGameRef.current?.spawnCar();
-        }
-      }, 100);
-
-      setModalState({
-        isVisible: true,
-        title: "Game Loaded",
-        message: "Game loaded successfully!",
-      });
-      playDoubleClickSound();
-    } catch (error) {
-      setModalState({
-        isVisible: true,
-        title: "Load Failed",
-        message: "Failed to load game!",
-      });
-      console.error("Load error:", error);
-    }
-  }, []);
 
   // Zoom controls
   const handleZoomIn = useCallback(() => {

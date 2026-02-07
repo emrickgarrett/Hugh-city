@@ -66,7 +66,7 @@ export class PathfindingSystem {
     if (gx < 0 || gx >= GRID_WIDTH || gy < 0 || gy >= GRID_HEIGHT) return Infinity;
     const tileType = this.grid[gy][gx].type;
     if (tileType === TileType.Road || tileType === TileType.Tile) return 1;
-    if (tileType === TileType.Asphalt) return 5;
+    if (tileType === TileType.Asphalt) return 2;
     return Infinity;
   }
 
@@ -105,7 +105,14 @@ export class PathfindingSystem {
     if (preferSidewalks) {
       return [...sidewalkDirs, ...asphaltDirs, ...grassDirs];
     }
-    return [...sidewalkDirs, ...asphaltDirs, ...grassDirs];
+    // When not preferring sidewalks, interleave so no tile type is always first
+    const mixed: Direction[] = [];
+    const maxLen = Math.max(sidewalkDirs.length, asphaltDirs.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (i < asphaltDirs.length) mixed.push(asphaltDirs[i]);
+      if (i < sidewalkDirs.length) mixed.push(sidewalkDirs[i]);
+    }
+    return [...mixed, ...grassDirs];
   }
 
   getValidCarDirections(tileX: number, tileY: number): Direction[] {
@@ -256,19 +263,30 @@ export class PathfindingSystem {
   ): Direction[] | null {
     if (startX === targetX && startY === targetY) return [];
 
-    const queue: Array<[number, number, number, number]> = [];
-    const visited = new Set<string>();
+    // Use proper A* with visited-on-expansion (closed set) instead of visited-on-discovery
+    // This ensures nodes are expanded via the cheapest path, critical for weighted costs
+    const openSet: Array<[number, number, number, number]> = []; // [priority, x, y, gCost]
+    const closedSet = new Set<string>();
+    const gCosts = new Map<string, number>(); // Best known g-cost for each node
     const cameFrom = new Map<string, { x: number; y: number; dir: Direction }>();
 
     const heuristic = (x: number, y: number) => Math.abs(x - targetX) + Math.abs(y - targetY);
 
     const startKey = `${startX},${startY}`;
-    visited.add(startKey);
-    queue.push([heuristic(startX, startY), startX, startY, 0]);
+    gCosts.set(startKey, 0);
+    openSet.push([heuristic(startX, startY), startX, startY, 0]);
 
-    while (queue.length > 0 && visited.size < maxSteps) {
-      queue.sort((a, b) => a[0] - b[0]);
-      const [, currentX, currentY, currentCost] = queue.shift()!;
+    let expansions = 0;
+
+    while (openSet.length > 0 && expansions < maxSteps) {
+      openSet.sort((a, b) => a[0] - b[0]);
+      const [, currentX, currentY, currentCost] = openSet.shift()!;
+      const currentKey = `${currentX},${currentY}`;
+
+      // Skip if already expanded (closed)
+      if (closedSet.has(currentKey)) continue;
+      closedSet.add(currentKey);
+      expansions++;
 
       if (currentX === targetX && currentY === targetY) {
         const path: Direction[] = [];
@@ -293,19 +311,22 @@ export class PathfindingSystem {
         const nextY = currentY + vec.dy;
         const nextKey = `${nextX},${nextY}`;
 
-        if (visited.has(nextKey)) continue;
+        if (closedSet.has(nextKey)) continue;
         if (nextX < 0 || nextX >= GRID_WIDTH || nextY < 0 || nextY >= GRID_HEIGHT) continue;
         if (!this.isWalkable(nextX, nextY, allowGrass)) continue;
 
         const isSidewalk = this.isSidewalk(nextX, nextY);
         const isGrass = allowGrass && this.grid[nextY]?.[nextX]?.type === TileType.Grass;
-        const stepCost = isSidewalk ? 1 : (isGrass ? 10 : 5);
+        const stepCost = isSidewalk ? 1 : (isGrass ? 10 : 2);
         const newCost = currentCost + stepCost;
-        const newPriority = newCost + heuristic(nextX, nextY);
 
-        visited.add(nextKey);
+        const existingCost = gCosts.get(nextKey);
+        if (existingCost !== undefined && newCost >= existingCost) continue;
+
+        // Found a better path to this node
+        gCosts.set(nextKey, newCost);
         cameFrom.set(nextKey, { x: currentX, y: currentY, dir });
-        queue.push([newPriority, nextX, nextY, newCost]);
+        openSet.push([newCost + heuristic(nextX, nextY), nextX, nextY, newCost]);
       }
     }
 
@@ -529,7 +550,7 @@ export class PathfindingSystem {
 
     if (dx === 0 && dy === 0) return null;
 
-    const validDirs = this.getValidDirections(charTileX, charTileY, true);
+    const validDirs = this.getValidDirections(charTileX, charTileY, false);
     if (validDirs.length === 0) return null;
 
     let primaryDir: Direction | null = null;
@@ -543,16 +564,8 @@ export class PathfindingSystem {
       secondaryDir = dx > 0 ? Direction.Right : dx < 0 ? Direction.Left : null;
     }
 
-    const primaryIsSidewalk = primaryDir && this.isSidewalk(charTileX + directionVectors[primaryDir].dx, charTileY + directionVectors[primaryDir].dy);
-    const secondaryIsSidewalk = secondaryDir && this.isSidewalk(charTileX + directionVectors[secondaryDir].dx, charTileY + directionVectors[secondaryDir].dy);
-
+    // Always prefer primary direction (towards target) regardless of tile type
     if (primaryDir && validDirs.includes(primaryDir)) {
-      if (primaryIsSidewalk) {
-        return primaryDir;
-      }
-      if (secondaryDir && secondaryIsSidewalk && validDirs.includes(secondaryDir)) {
-        return secondaryDir;
-      }
       return primaryDir;
     }
 
@@ -560,20 +573,8 @@ export class PathfindingSystem {
       return secondaryDir;
     }
 
+    // Find any direction that reduces distance to target
     const currentDistance = Math.abs(dx) + Math.abs(dy);
-
-    for (const dir of validDirs) {
-      const vec = directionVectors[dir];
-      const nextX = charTileX + vec.dx;
-      const nextY = charTileY + vec.dy;
-
-      if (!this.isSidewalk(nextX, nextY)) continue;
-
-      const newDistance = Math.abs(targetX - nextX) + Math.abs(targetY - nextY);
-      if (newDistance < currentDistance) {
-        return dir;
-      }
-    }
 
     for (const dir of validDirs) {
       const vec = directionVectors[dir];
