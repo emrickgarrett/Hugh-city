@@ -41,6 +41,14 @@ export class CarAISystem {
   // and disabled once they are no longer overlapping.
   private phasingPairs = new Set<string>();
 
+  // Track taxi positions for stuck detection.
+  // Maps car ID → { x, y, frameCount } where frameCount is how many frames
+  // the taxi has been near that position.
+  private taxiStuckTracker = new Map<string, { x: number; y: number; frames: number }>();
+
+  // How many frames a taxi must be stuck before teleporting
+  private static readonly TAXI_STUCK_THRESHOLD = 150;
+
   constructor(pathfinding: PathfindingSystem) {
     this.pathfinding = pathfinding;
   }
@@ -61,7 +69,7 @@ export class CarAISystem {
   }
 
   /**
-   * Clean up phasing pairs — remove pairs where the cars are no longer overlapping.
+   * Clean up phasing pairs and stuck trackers — remove entries for cars that no longer exist.
    * Called once per frame from the main update loop.
    */
   cleanupPhasingPairs(allCars: Car[], playerCar: Car | null): void {
@@ -83,6 +91,13 @@ export class CarAISystem {
       const dist = Math.sqrt((carA.x - carB.x) ** 2 + (carA.y - carB.y) ** 2);
       if (dist > clearDist) {
         this.phasingPairs.delete(key);
+      }
+    }
+
+    // Clean up stuck trackers for cars that no longer exist
+    for (const carId of this.taxiStuckTracker.keys()) {
+      if (!carMap.has(carId)) {
+        this.taxiStuckTracker.delete(carId);
       }
     }
   }
@@ -371,8 +386,9 @@ export class CarAISystem {
           const softPos = this.applySoftCollision(movedCar, allCars, playerCar);
           return { ...movedCar, x: softPos.x, y: softPos.y };
         } else {
-          // Turn is blocked — hold at tile center with soft push
-          const movedCar = { ...car, x: tileX + 0.5, y: tileY + 0.5, waiting: 0 };
+          // Turn is blocked — hold at tile center, accumulate wait for phasing
+          const cornerWait = (car.waiting || 0) + 1;
+          const movedCar = { ...car, x: tileX + 0.5, y: tileY + 0.5, direction: cornerDir, waiting: cornerWait };
           const softPos = this.applySoftCollision(movedCar, allCars, playerCar);
           return { ...movedCar, x: softPos.x, y: softPos.y };
         }
@@ -464,7 +480,13 @@ export class CarAISystem {
           true
         );
         if (newDir) {
-          newDirection = newDir;
+          // Only accept the new direction if it actually leads to a drivable tile,
+          // preventing spin loops where U-turn logic keeps cycling through directions
+          const newDirVec = directionVectors[newDir];
+          if (this.pathfinding.isDrivable(tileX + newDirVec.dx, tileY + newDirVec.dy)) {
+            newDirection = newDir;
+          }
+          // else: no drivable direction found — keep current direction and stay put
         }
         nextX = tileX + 0.5;
         nextY = tileY + 0.5;
@@ -717,10 +739,44 @@ export class CarAISystem {
     const tileY = Math.floor(car.y);
     let pathIdx = car.carPathIndex;
 
-    // If we've moved to a new tile since last check, advance the path index
+    // If we've moved to a new tile since last check, check if it's the EXPECTED next tile
     if (car.lastCarPathTile) {
       if (car.lastCarPathTile.x !== tileX || car.lastCarPathTile.y !== tileY) {
-        pathIdx++;
+        // Verify this is the tile we expected to move INTO (the one the current path step leads to)
+        const currentDir = car.cachedCarPath[pathIdx];
+        const expectedVec = directionVectors[currentDir];
+        const expectedTileX = car.lastCarPathTile.x + expectedVec.dx;
+        const expectedTileY = car.lastCarPathTile.y + expectedVec.dy;
+
+        if (tileX === expectedTileX && tileY === expectedTileY) {
+          // Moved to the expected next tile — advance path index
+          pathIdx++;
+        } else {
+          // Moved to an unexpected tile (pushed by collision/lane correction).
+          // Try to find our current tile in the remaining path to re-sync rather
+          // than throwing the whole path away (which causes recompute-spin).
+          const remainingPath = car.cachedCarPath;
+          let resyncIdx = -1;
+          // Walk forward through the path to see if we can find the tile we landed on
+          let walkX = car.lastCarPathTile.x;
+          let walkY = car.lastCarPathTile.y;
+          for (let i = pathIdx; i < remainingPath.length; i++) {
+            const stepVec = directionVectors[remainingPath[i]];
+            walkX += stepVec.dx;
+            walkY += stepVec.dy;
+            if (walkX === tileX && walkY === tileY) {
+              resyncIdx = i + 1; // We're at this tile, next step is i+1
+              break;
+            }
+          }
+
+          if (resyncIdx >= 0 && resyncIdx < remainingPath.length) {
+            pathIdx = resyncIdx;
+          } else {
+            // Can't re-sync — invalidate path for recompute
+            return null;
+          }
+        }
       }
     }
 
@@ -737,6 +793,11 @@ export class CarAISystem {
     };
   }
 
+  // TODO: Taxis still occasionally spin in place at dead-ends and corners.
+  // The stuck detection + teleport is a band-aid. Root cause is likely in the
+  // interaction between lane correction, path re-sync, and U-turn logic at
+  // segment boundaries. Revisit to properly fix the spinning behavior.
+
   /**
    * Core taxi update — implements the taxi state machine per frame.
    */
@@ -752,18 +813,45 @@ export class CarAISystem {
     const tileY = Math.floor(car.y);
     const effectiveSpeed = car.speed * (gameSpeed === GameSpeed.Paused ? 0 : gameSpeed);
 
+    // Stuck detection: if taxi hasn't moved in 150 frames, teleport it
+    const stuckResult = this.checkTaxiStuck(car, grid);
+    if (stuckResult) {
+      // If taxi had a passenger, eject them before teleporting
+      if (car.passengerId) {
+        const passenger = characters.find(c => c.id === car.passengerId);
+        if (passenger) {
+          const sidewalk = this.pathfinding.findNearestSidewalkTile(tileX, tileY);
+          if (sidewalk) {
+            passenger.x = sidewalk.x + 0.5;
+            passenger.y = sidewalk.y + 0.5;
+          }
+          passenger.state = passenger.preTaxiState || "wandering";
+          passenger.currentDestination = passenger.preTaxiDestination;
+          passenger.preTaxiState = undefined;
+          passenger.preTaxiDestination = undefined;
+          passenger.taxiId = undefined;
+          passenger.cachedPath = undefined;
+          passenger.pathIndex = undefined;
+          passenger.lastPathTile = undefined;
+        }
+      }
+      // Reset to cruising after teleport
+      return this.taxiToCruising(stuckResult);
+    }
+
     switch (car.taxiState) {
       // ---- CRUISING: Drive around, look for passengers ----
       case TaxiState.Cruising: {
         // Drive using the normal car AI (random turns at intersections)
-        const carForMovement = { ...car, waiting: 0 };
-        const cruisingCar = this.updateSingleCarMovement(carForMovement, allCars, playerCar, grid, gameSpeed);
+        // Pass the car's current waiting value so blocking waits accumulate properly
+        const cruisingCar = this.updateSingleCarMovement(car, allCars, playerCar, grid, gameSpeed);
 
         const cruisingTileX = Math.floor(cruisingCar.x);
         const cruisingTileY = Math.floor(cruisingCar.y);
 
-        // Scan counter: use `waiting` field to count frames between passenger scans
-        const scanCounter = (car.waiting || 0) + 1;
+        // Scan for passengers using frame-counting (independent of movement waiting)
+        // Use carPathIndex as a scan counter since cruising taxis don't use paths
+        const scanCounter = ((car.carPathIndex as number) || 0) + 1;
 
         if (scanCounter >= 60) {
           // Every 60 frames, look for an eligible passenger
@@ -788,10 +876,10 @@ export class CarAISystem {
             }
           }
           // Reset scan counter
-          return { ...cruisingCar, waiting: 0 };
+          return { ...cruisingCar, carPathIndex: 0 };
         }
 
-        return { ...cruisingCar, waiting: scanCounter };
+        return { ...cruisingCar, carPathIndex: scanCounter };
       }
 
       // ---- PICKING UP: Drive toward the citizen ----
@@ -972,7 +1060,14 @@ export class CarAISystem {
       moveDir = pathResult.direction;
       workingCar = pathResult.updatedCar;
     } else {
-      // Path exhausted or missing — recompute
+      // Path exhausted or missing — recompute, but not every frame
+      // Use waiting counter to throttle recomputes (prevents spin-recompute loops)
+      const recomputeWait = (car.waiting || 0);
+      if (recomputeWait > 0 && recomputeWait < 10) {
+        // Still cooling down from last recompute — keep moving in current direction
+        return { ...car, waiting: recomputeWait + 1 };
+      }
+
       const newPath = this.pathfinding.computeCarPath(tileX, tileY, target.x, target.y, 500);
       if (newPath && newPath.length > 0) {
         moveDir = newPath[0];
@@ -981,6 +1076,7 @@ export class CarAISystem {
           cachedCarPath: newPath,
           carPathIndex: 0,
           lastCarPathTile: { x: tileX, y: tileY },
+          waiting: 0,
         };
       } else {
         // No path exists at all
@@ -1019,38 +1115,41 @@ export class CarAISystem {
 
     // Step 3: Move forward
     const moveVec = directionVectors[moveDir];
-    let nextX = car.x + moveVec.dx * effectiveSpeed;
-    let nextY = car.y + moveVec.dy * effectiveSpeed;
+    let rawNextX = car.x + moveVec.dx * effectiveSpeed;
+    let rawNextY = car.y + moveVec.dy * effectiveSpeed;
 
     // Snap to avoid floating point drift
     const ps = Math.max(0.001, effectiveSpeed);
-    nextX = Math.round(nextX / ps) * ps;
-    nextY = Math.round(nextY / ps) * ps;
+    rawNextX = Math.round(rawNextX / ps) * ps;
+    rawNextY = Math.round(rawNextY / ps) * ps;
 
     // Step 3b: Apply lane correction — gently nudge toward correct side of road
-    const laneCorrected = this.applyLaneCorrection(nextX, nextY, moveDir, effectiveSpeed, grid);
-    nextX = laneCorrected.x;
-    nextY = laneCorrected.y;
+    const laneCorrected = this.applyLaneCorrection(rawNextX, rawNextY, moveDir, effectiveSpeed, grid);
+    let nextX = laneCorrected.x;
+    let nextY = laneCorrected.y;
 
     // Safety: don't drive off asphalt
-    const nextTileX = Math.floor(nextX);
-    const nextTileY = Math.floor(nextY);
+    let nextTileX = Math.floor(nextX);
+    let nextTileY = Math.floor(nextY);
     if (!this.pathfinding.isDrivable(nextTileX, nextTileY)) {
-      // Went off-road — snap to current tile center and recompute path
-      const newPath = this.pathfinding.computeCarPath(tileX, tileY, target.x, target.y, 500);
-      if (newPath && newPath.length > 0) {
+      // Lane correction pushed us off-road — try without lane correction
+      nextX = rawNextX;
+      nextY = rawNextY;
+      nextTileX = Math.floor(nextX);
+      nextTileY = Math.floor(nextY);
+
+      if (!this.pathfinding.isDrivable(nextTileX, nextTileY)) {
+        // Movement itself goes off-road — stay at tile center but KEEP the path.
+        // Just wait at current position; the path is still valid, we just can't
+        // move forward yet (likely at a segment boundary).
         return {
           ...workingCar,
           x: tileX + 0.5,
           y: tileY + 0.5,
-          cachedCarPath: newPath,
-          carPathIndex: 0,
-          lastCarPathTile: { x: tileX, y: tileY },
-          direction: newPath[0],
-          waiting: 0,
+          direction: moveDir,
+          waiting: (workingCar.waiting || 0) + 1,
         };
       }
-      return { ...workingCar, x: tileX + 0.5, y: tileY + 0.5, direction: moveDir, waiting: 0 };
     }
 
     // Apply soft collision push
@@ -1132,6 +1231,71 @@ export class CarAISystem {
     }
 
     return { x: correctedX, y: correctedY };
+  }
+
+  /**
+   * Check if a taxi is stuck (hasn't moved significantly in TAXI_STUCK_THRESHOLD frames).
+   * If stuck, teleport it to a nearby valid asphalt tile with 2+ drivable neighbors.
+   * Returns the teleported car, or null if not stuck.
+   */
+  private checkTaxiStuck(
+    car: Car,
+    grid: import("../../types").GridCell[][]
+  ): Car | null {
+    const tracker = this.taxiStuckTracker.get(car.id);
+    const dist = tracker
+      ? Math.abs(car.x - tracker.x) + Math.abs(car.y - tracker.y)
+      : Infinity;
+
+    if (!tracker || dist > 1.5) {
+      // Car has moved significantly — reset tracker
+      this.taxiStuckTracker.set(car.id, { x: car.x, y: car.y, frames: 0 });
+      return null;
+    }
+
+    // Car hasn't moved much — increment counter
+    const newFrames = tracker.frames + 1;
+    this.taxiStuckTracker.set(car.id, { x: tracker.x, y: tracker.y, frames: newFrames });
+
+    if (newFrames < CarAISystem.TAXI_STUCK_THRESHOLD) {
+      return null; // Not stuck long enough yet
+    }
+
+    // Taxi is stuck! Find a valid asphalt tile to teleport to.
+    // Pick a random one with 2+ drivable neighbors, away from current position.
+    const candidates: { x: number; y: number }[] = [];
+    for (let gy = 0; gy < GRID_HEIGHT; gy++) {
+      for (let gx = 0; gx < GRID_WIDTH; gx++) {
+        if (grid[gy][gx].type === TileType.Asphalt) {
+          const neighbors = this.pathfinding.getValidCarDirections(gx, gy).length;
+          if (neighbors >= 2) {
+            const teleportDist = Math.abs(gx - Math.floor(car.x)) + Math.abs(gy - Math.floor(car.y));
+            if (teleportDist >= 3) {
+              candidates.push({ x: gx, y: gy });
+            }
+          }
+        }
+      }
+    }
+
+    if (candidates.length === 0) return null;
+
+    const target = candidates[Math.floor(Math.random() * candidates.length)];
+    const laneDir = getLaneDirection(target.x, target.y, grid);
+
+    // Reset stuck tracker
+    this.taxiStuckTracker.set(car.id, { x: target.x + 0.5, y: target.y + 0.5, frames: 0 });
+
+    return {
+      ...car,
+      x: target.x + 0.5,
+      y: target.y + 0.5,
+      direction: laneDir || car.direction,
+      cachedCarPath: undefined,
+      carPathIndex: undefined,
+      lastCarPathTile: undefined,
+      waiting: 0,
+    };
   }
 
   /** Helper: reset taxi to cruising state */
