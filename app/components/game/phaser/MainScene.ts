@@ -332,11 +332,13 @@ export class MainScene extends Phaser.Scene {
     this.updateCars();
     this.updatePlayerCar();
 
-    // Manage taxi fleet size
-    this.taxiFleetCheckCounter++;
-    if (this.taxiFleetCheckCounter >= TAXI_FLEET_CHECK_INTERVAL) {
-      this.taxiFleetCheckCounter = 0;
-      this.manageTaxiFleet();
+    // Manage taxi fleet size (skip when paused)
+    if (this.gameSpeed !== GameSpeed.Paused) {
+      this.taxiFleetCheckCounter++;
+      if (this.taxiFleetCheckCounter >= TAXI_FLEET_CHECK_INTERVAL) {
+        this.taxiFleetCheckCounter = 0;
+        this.manageTaxiFleet();
+      }
     }
 
     // Handle camera movement (when not driving)

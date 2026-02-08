@@ -814,7 +814,8 @@ export class CarAISystem {
     const effectiveSpeed = car.speed * (gameSpeed === GameSpeed.Paused ? 0 : gameSpeed);
 
     // Stuck detection: if taxi hasn't moved in 150 frames, teleport it
-    const stuckResult = this.checkTaxiStuck(car, grid);
+    // Skip when paused — taxis can't move at speed 0, so they'd always appear "stuck"
+    const stuckResult = gameSpeed !== GameSpeed.Paused ? this.checkTaxiStuck(car, grid) : null;
     if (stuckResult) {
       // If taxi had a passenger, eject them before teleporting
       if (car.passengerId) {
