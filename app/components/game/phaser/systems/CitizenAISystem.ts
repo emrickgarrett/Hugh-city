@@ -60,7 +60,8 @@ export class CitizenAISystem {
   ): number {
     const framesSinceFood = ((char as any).framesSinceLastFood || 0);
     const needsFood = !char.ateToday || framesSinceFood >= 1200;
-    const needsEntertainment = !char.entertainedToday;
+    const framesSinceEntertainment = ((char as any).framesSinceLastEntertainment || 0);
+    const needsEntertainment = !char.entertainedToday || framesSinceEntertainment >= 1200;
 
     const { minFoodCost, minEntertainmentCost } = this.findCheapestOptions(char.x, char.y, grid);
 
@@ -290,6 +291,7 @@ export class CitizenAISystem {
             }
             if (!isFoodBusiness) {
               updatedNeeds.entertainedToday = true;
+              (updatedNeeds as any).framesSinceLastEntertainment = 0;
             }
 
             return {
@@ -317,15 +319,23 @@ export class CitizenAISystem {
   // MOODLET CALCULATION
   // ============================================
 
-  calculateMoodlet(char: CharacterWithResidence & { framesSinceLastFood?: number }): { moodlet: MoodletType; reason: string } {
+  calculateMoodlet(char: CharacterWithResidence & { framesSinceLastFood?: number; framesSinceLastEntertainment?: number }): { moodlet: MoodletType; reason: string } {
     const hasHome = char.residenceX !== undefined && char.residenceY !== undefined;
     const citizenMoney = char.money ?? 0;
     const ateToday = char.ateToday ?? false;
     const entertainedToday = char.entertainedToday ?? false;
 
-    const framesSinceFood = (char as any).framesSinceLastFood || (ateToday ? 0 : 1200);
+    const framesSinceFood = (char as any).framesSinceLastFood || (ateToday ? 0 : 3600);
     const hoursSinceFood = Math.floor((framesSinceFood / 3600) * 24);
-    const needsFood = !ateToday || framesSinceFood >= 1200;
+    const framesSinceEntertainment = (char as any).framesSinceLastEntertainment || (entertainedToday ? 0 : 3600);
+    const hoursSinceEntertainment = Math.floor((framesSinceEntertainment / 3600) * 24);
+
+    // "Wants" — citizens still seek these out daily (used for AI behavior)
+    // "Needs" — only become mood-affecting after a full day (3600 frames)
+    const HUNGRY_THRESHOLD = 3600; // 1 in-game day
+    const SAD_THRESHOLD = 3600;    // 1 in-game day
+    const isHungry = framesSinceFood >= HUNGRY_THRESHOLD;
+    const isBored = framesSinceEntertainment >= SAD_THRESHOLD;
 
     if (!hasHome) {
       if (char.isTourist) {
@@ -337,33 +347,38 @@ export class CitizenAISystem {
       return { moodlet: "depressed", reason: "I've been homeless too long... I might have to leave this city" };
     }
 
-    if (citizenMoney <= 5 && needsFood) {
+    if (citizenMoney <= 5 && isHungry) {
       return { moodlet: "angry", reason: "I'm so hungry but I can't afford any food!" };
     }
 
-    if (needsFood) {
+    if (isHungry) {
       const hours = Math.floor(hoursSinceFood);
-      if (hours === 0) {
-        return { moodlet: "hungry", reason: "I'm getting hungry, I should find some food!" };
-      } else if (hours === 1) {
-        return { moodlet: "hungry", reason: "I haven't eaten in an hour, I need food!" };
+      if (hours <= 24) {
+        return { moodlet: "hungry", reason: "I haven't eaten in a whole day, I really need food!" };
       } else {
-        return { moodlet: "hungry", reason: `I haven't eaten in ${hours} hours, I really need to find food!` };
+        return { moodlet: "hungry", reason: `I haven't eaten in ${hours} hours, I'm starving!` };
       }
     }
 
-    if (hasHome && ateToday && entertainedToday) {
-      if (Math.random() < 0.01) {
-        return { moodlet: "happy", reason: "Thinking about bangin nerds mom" };
+    if (isBored && !isHungry) {
+      const hours = Math.floor(hoursSinceEntertainment);
+      if (hours <= 24) {
+        return { moodlet: "sad", reason: "I haven't had any fun in a whole day... I need entertainment!" };
+      } else {
+        return { moodlet: "sad", reason: `I haven't had entertainment in ${hours} hours, I'm really bored!` };
       }
-      return { moodlet: "happy", reason: "I have a home, I'm well fed, and I'm having fun!" };
     }
 
-    if (!ateToday || !entertainedToday) {
-      const reasons: string[] = [];
-      if (!ateToday) reasons.push("I haven't eaten today");
-      if (!entertainedToday) reasons.push("I need some entertainment");
-      return { moodlet: "sad", reason: `I'm feeling down... ${reasons.join(" and ")}` };
+    // Both needs fulfilled within the last day — check if recently satisfied
+    if (hasHome && !isHungry && !isBored) {
+      if (ateToday && entertainedToday) {
+        if (Math.random() < 0.01) {
+          return { moodlet: "happy", reason: "Thinking about bangin nerds mom" };
+        }
+        return { moodlet: "happy", reason: "I have a home, I'm well fed, and I'm having fun!" };
+      }
+      // Not yet eaten/entertained today but within grace period — still content
+      return { moodlet: "happy", reason: "I have a home and I'm doing well!" };
     }
 
     return { moodlet: "sad", reason: "I'm feeling a bit down" };
@@ -424,9 +439,16 @@ export class CitizenAISystem {
       framesSinceLastFood += ctx.gameSpeed === GameSpeed.Paused ? 0 : 1;
     }
 
+    let framesSinceLastEntertainment = (char as any).framesSinceLastEntertainment || 0;
+    if (char.entertainedToday) {
+      framesSinceLastEntertainment = 0;
+    } else {
+      framesSinceLastEntertainment += ctx.gameSpeed === GameSpeed.Paused ? 0 : 1;
+    }
+
     // Calculate moodlet
     const previousMoodlet = char.moodlet || null;
-    const moodletResult = this.calculateMoodlet({ ...char, framesSinceLastFood });
+    const moodletResult = this.calculateMoodlet({ ...char, framesSinceLastFood, framesSinceLastEntertainment });
     const newMoodlet = moodletResult.moodlet;
     const moodletReason = moodletResult.reason;
     const moodletChanged = previousMoodlet !== newMoodlet;
@@ -537,8 +559,17 @@ export class CitizenAISystem {
     // If citizen has money and is wandering, prioritize needs
     else if (state === "wandering" && !currentDestination && !isBroke) {
       const framesSinceFood = ((char as any).framesSinceLastFood || 0);
-      const needsFood = !char.ateToday || framesSinceFood >= 1200;
-      const needsEntertainment = !char.entertainedToday;
+      const framesSinceEnt = ((char as any).framesSinceLastEntertainment || 0);
+      // "Wants" — still seek at 1200 frames (~8 hours), keeps existing daily behavior
+      const wantsFood = !char.ateToday || framesSinceFood >= 1200;
+      const wantsEntertainment = !char.entertainedToday || framesSinceEnt >= 1200;
+      // Use wants for seeking behavior
+      const needsFood = wantsFood;
+      const needsEntertainment = wantsEntertainment;
+      // Prioritize based on urgency: whichever need is more overdue gets fulfilled first
+      const foodUrgency = wantsFood ? framesSinceFood : -1;
+      const entertainmentUrgency = wantsEntertainment ? framesSinceEnt : -1;
+      const foodFirst = foodUrgency >= entertainmentUrgency;
 
       // Mood-based business visit skipping (never skip food-seeking)
       let skipBusinessVisit = false;
@@ -556,91 +587,101 @@ export class CitizenAISystem {
 
       let priorityBuildings: Array<{ buildingId: string; originX: number; originY: number; distance: number }> = [];
 
-      if (needsFood) {
-        const nearbyBuildings = this.pathfinding.findNearbyBuildings(x, y, 20);
-        const reservedMoney = this.calculateReservedMoney(char, "food", ctx.grid);
-        const foodBuildings = nearbyBuildings
-          .filter((b) => {
-            const building = getBuilding(b.buildingId);
-            if (!building || building.category === "residential") return false;
-            const economics = getBuildingEconomics(building);
-            const cost = economics.incomePerInteraction ?? 0;
+      // Build ordered list of needs based on urgency (whichever is most overdue goes first)
+      const needOrder: ("food" | "entertainment")[] = foodFirst
+        ? ["food", "entertainment"]
+        : ["entertainment", "food"];
 
-            const buildingName = building.name.toLowerCase();
-            const isFoodBusiness =
-              buildingName.includes("dunkin") ||
-              buildingName.includes("popeyes") ||
-              buildingName.includes("checkers") ||
-              buildingName.includes("martini") ||
-              buildingName.includes("bar") ||
-              buildingName.includes("restaurant") ||
-              buildingName.includes("cafe") ||
-              buildingName.includes("food");
+      for (const needType of needOrder) {
+        if (priorityBuildings.length > 0) break;
 
-            return (
-              isFoodBusiness &&
-              economics.incomePerInteraction !== undefined &&
-              citizenMoney >= cost + reservedMoney
-            );
-          })
-          .map((b) => {
-            const building = getBuilding(b.buildingId);
-            const economics = getBuildingEconomics(building!);
-            return { ...b, cost: economics.incomePerInteraction ?? 0 };
+        if (needType === "food" && needsFood) {
+          const nearbyBuildings = this.pathfinding.findNearbyBuildings(x, y, 20);
+          const reservedMoney = this.calculateReservedMoney(char, "food", ctx.grid);
+          const foodBuildings = nearbyBuildings
+            .filter((b) => {
+              const building = getBuilding(b.buildingId);
+              if (!building || building.category === "residential") return false;
+              const economics = getBuildingEconomics(building);
+              const cost = economics.incomePerInteraction ?? 0;
+
+              const buildingName = building.name.toLowerCase();
+              const isFoodBusiness =
+                buildingName.includes("dunkin") ||
+                buildingName.includes("popeyes") ||
+                buildingName.includes("checkers") ||
+                buildingName.includes("martini") ||
+                buildingName.includes("bar") ||
+                buildingName.includes("restaurant") ||
+                buildingName.includes("cafe") ||
+                buildingName.includes("food");
+
+              return (
+                isFoodBusiness &&
+                economics.incomePerInteraction !== undefined &&
+                citizenMoney >= cost + reservedMoney
+              );
+            })
+            .map((b) => {
+              const building = getBuilding(b.buildingId);
+              const economics = getBuildingEconomics(building!);
+              return { ...b, cost: economics.incomePerInteraction ?? 0 };
+            });
+
+          foodBuildings.sort((a, b) => {
+            const costDiff = b.cost - a.cost;
+            if (Math.abs(costDiff) > 5) return costDiff;
+            return a.distance - b.distance;
           });
+          priorityBuildings = foodBuildings;
+        }
 
-        foodBuildings.sort((a, b) => {
-          const costDiff = b.cost - a.cost;
-          if (Math.abs(costDiff) > 5) return costDiff;
-          return a.distance - b.distance;
-        });
-        priorityBuildings = foodBuildings;
+        if (needType === "entertainment" && needsEntertainment) {
+          const nearbyBuildings = this.pathfinding.findNearbyBuildings(x, y, 20);
+          const reservedMoney = this.calculateReservedMoney(char, "entertainment", ctx.grid);
+          const entertainmentBuildings = nearbyBuildings
+            .filter((b) => {
+              const building = getBuilding(b.buildingId);
+              if (!building || building.category === "residential") return false;
+              const economics = getBuildingEconomics(building);
+              const cost = economics.incomePerInteraction ?? 0;
+
+              const buildingName = building.name.toLowerCase();
+              const isFoodBusiness =
+                buildingName.includes("dunkin") ||
+                buildingName.includes("popeyes") ||
+                buildingName.includes("checkers") ||
+                buildingName.includes("martini") ||
+                buildingName.includes("bar") ||
+                buildingName.includes("restaurant") ||
+                buildingName.includes("cafe") ||
+                buildingName.includes("food");
+
+              return (
+                !isFoodBusiness &&
+                (building.category === "commercial" ||
+                  building.category === "civic" ||
+                  building.category === "landmark") &&
+                economics.incomePerInteraction !== undefined &&
+                citizenMoney >= cost + reservedMoney
+              );
+            })
+            .map((b) => {
+              const building = getBuilding(b.buildingId);
+              const economics = getBuildingEconomics(building!);
+              return { ...b, cost: economics.incomePerInteraction ?? 0 };
+            });
+
+          entertainmentBuildings.sort((a, b) => {
+            const costDiff = b.cost - a.cost;
+            if (Math.abs(costDiff) > 5) return costDiff;
+            return a.distance - b.distance;
+          });
+          priorityBuildings = entertainmentBuildings;
+        }
       }
 
-      if (priorityBuildings.length === 0 && needsEntertainment) {
-        const nearbyBuildings = this.pathfinding.findNearbyBuildings(x, y, 20);
-        const reservedMoney = this.calculateReservedMoney(char, "entertainment", ctx.grid);
-        const entertainmentBuildings = nearbyBuildings
-          .filter((b) => {
-            const building = getBuilding(b.buildingId);
-            if (!building || building.category === "residential") return false;
-            const economics = getBuildingEconomics(building);
-            const cost = economics.incomePerInteraction ?? 0;
-
-            const buildingName = building.name.toLowerCase();
-            const isFoodBusiness =
-              buildingName.includes("dunkin") ||
-              buildingName.includes("popeyes") ||
-              buildingName.includes("checkers") ||
-              buildingName.includes("martini") ||
-              buildingName.includes("bar") ||
-              buildingName.includes("restaurant") ||
-              buildingName.includes("cafe") ||
-              buildingName.includes("food");
-
-            return (
-              !isFoodBusiness &&
-              (building.category === "commercial" ||
-                building.category === "civic" ||
-                building.category === "landmark") &&
-              economics.incomePerInteraction !== undefined &&
-              citizenMoney >= cost + reservedMoney
-            );
-          })
-          .map((b) => {
-            const building = getBuilding(b.buildingId);
-            const economics = getBuildingEconomics(building!);
-            return { ...b, cost: economics.incomePerInteraction ?? 0 };
-          });
-
-        entertainmentBuildings.sort((a, b) => {
-          const costDiff = b.cost - a.cost;
-          if (Math.abs(costDiff) > 5) return costDiff;
-          return a.distance - b.distance;
-        });
-        priorityBuildings = entertainmentBuildings;
-      }
-
+      // Bonus food visits when all needs are met and citizen has extra money
       if (priorityBuildings.length === 0 && char.ateToday && !needsEntertainment) {
         const extraMoneyThreshold = 60;
         if (citizenMoney >= extraMoneyThreshold) {
@@ -1113,6 +1154,7 @@ export class CitizenAISystem {
       oscillationCounter: oscillationCounter,
       secondLastPosition: lastPos ? { x: lastPos.x, y: lastPos.y } : undefined,
       framesSinceLastFood: framesSinceLastFood,
+      framesSinceLastEntertainment: framesSinceLastEntertainment,
       moodlet: newMoodlet,
       moodletReason: moodletReason,
       previousMoodlet: previousMoodlet,
@@ -1122,6 +1164,7 @@ export class CitizenAISystem {
       oscillationCounter?: number;
       secondLastPosition?: { x: number; y: number };
       framesSinceLastFood?: number;
+      framesSinceLastEntertainment?: number;
     };
 
     return updatedChar;

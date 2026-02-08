@@ -820,13 +820,16 @@ export class CarAISystem {
 
           if (dist <= TAXI_PICKUP_RADIUS) {
             // Pick up the citizen!
-            const dest = citizen.currentDestination!;
+            const dest = citizen.currentDestination;
+            if (!dest) {
+              return this.taxiToCruising(car);
+            }
             const dropoffTile = this.pathfinding.findNearestDrivableTile(dest.x, dest.y);
             if (dropoffTile) {
               const dropoffPath = this.pathfinding.computeCarPath(tileX, tileY, dropoffTile.x, dropoffTile.y, 500);
               if (dropoffPath && dropoffPath.length > 0) {
                 citizen.preTaxiState = citizen.state as "heading_to_building" | "heading_home";
-                citizen.preTaxiDestination = { ...citizen.currentDestination! };
+                citizen.preTaxiDestination = { ...dest };
                 citizen.state = "in_taxi";
                 citizen.taxiId = car.id;
 

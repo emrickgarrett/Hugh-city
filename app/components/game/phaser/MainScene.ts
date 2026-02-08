@@ -1417,10 +1417,11 @@ export class MainScene extends Phaser.Scene {
       citizen.money = citizen.dailyBudget ?? MIN_DAILY_BUDGET;
       citizen.brokeUntilNextDay = false;
       
-      // Reset daily needs (ateToday, entertainedToday)
+      // Reset daily flags (ateToday, entertainedToday) — frame counters continue tracking
       citizen.ateToday = false;
       citizen.entertainedToday = false;
       (citizen as any).framesSinceLastFood = (citizen as any).framesSinceLastFood || 0; // Keep tracking
+      (citizen as any).framesSinceLastEntertainment = (citizen as any).framesSinceLastEntertainment || 0; // Keep tracking
 
       // Wake up citizens who were resting at home
       if (citizen.state === "resting_at_home") {
