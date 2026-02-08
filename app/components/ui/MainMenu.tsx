@@ -314,6 +314,7 @@ export default function MainMenu({
                 <hr style={{ border: "none", borderTop: "1px solid var(--rct-panel-mid)", margin: "4px 0" }} />
                 <div><strong>Built with:</strong> Next.js, React, Phaser 3, Tailwind CSS</div>
                 <div><strong>Fonts:</strong> Jersey 10, Pixelify Sans</div>
+                <div><strong>Engine & Art:</strong> <a href="https://x.com/ghosttyped" target="_blank" rel="noopener noreferrer" style={{ color: "var(--rct-text)", textDecoration: "underline" }}>@ghosttyped</a></div>
                 <div><strong>AI Assistant:</strong> Claude by Anthropic</div>
                 <hr style={{ border: "none", borderTop: "1px solid var(--rct-panel-mid)", margin: "4px 0" }} />
                 <div style={{ textAlign: "center", opacity: 0.5, fontSize: 12 }}>
